@@ -19,10 +19,10 @@ until each subsystem is mechanically moved and validated.
 - `Config.lua`
 - `Systems/ConfigStore.lua`
 - `Runtime.lua`
+- `Systems/SkillFX.lua`
 
 ## Remaining monolith sections
 
-- SkillFX tracking
 - Dodge decisions
 - Replay FSM
 - Targeting/enemy cache
@@ -45,8 +45,18 @@ until each subsystem is mechanically moved and validated.
 - Local balance audit over Lua brackets passed for current `.lua` files.
 - Runtime state initializer moved out of `Main.lua`; no duplicate
   `RuntimeState = { ... }` owner remains in Main.
+- SkillFX model registration, unregister, active hazard part classification,
+  and hitbox/precast part-kind detection moved into `Systems/SkillFX.lua`.
+  Main retains only adapter wrappers for existing call sites.
+- SkillFX hardcoded enemy/skill names searched: none found.
+- Fixed invalid `Combat` table constructor in `Main.lua`; table keys are now
+  direct fields instead of `Combat.Field = value`.
+- Removed duplicate `config.AutoStart = true` from `Systems/ConfigStore.lua`.
+- Searched all `.lua` files for malformed `TableName.Field = value` entries
+  inside table constructors; no remaining candidates found.
 - Current dependency direction:
   `Main.lua -> Runtime.lua`,
+  `Main.lua -> Systems/SkillFX.lua`,
   `Main.lua -> Systems/ConfigStore.lua -> Config.lua`.
 - Static Luau CLI validation could not run because no `luau` binary is
   available in this environment.
