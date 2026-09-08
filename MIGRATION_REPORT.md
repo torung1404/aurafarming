@@ -20,10 +20,10 @@ until each subsystem is mechanically moved and validated.
 - `Systems/ConfigStore.lua`
 - `Runtime.lua`
 - `Systems/SkillFX.lua`
+- `Controllers/Dodge.lua`
 
 ## Remaining monolith sections
 
-- Dodge decisions
 - Replay FSM
 - Targeting/enemy cache
 - Movement/navigation
@@ -49,6 +49,13 @@ until each subsystem is mechanically moved and validated.
   and hitbox/precast part-kind detection moved into `Systems/SkillFX.lua`.
   Main retains only adapter wrappers for existing call sites.
 - SkillFX hardcoded enemy/skill names searched: none found.
+- Dodge hazard radius, predicted radius, hazard height checks, nearby hazard
+  refresh, safe-point checks, route checks, dodge goal selection, and update
+  decision logic moved into `Controllers/Dodge.lua`. Main retains only adapter
+  wrappers used by movement/explore call sites.
+- Dodge runtime owner check: `ActiveHazard`, `DodgeGoal`,
+  `LastHazardThreatAt`, and `NearbyActiveHazards` are owned by
+  `Controllers/Dodge.lua`.
 - Fixed invalid `Combat` table constructor in `Main.lua`; table keys are now
   direct fields instead of `Combat.Field = value`.
 - Removed duplicate `config.AutoStart = true` from `Systems/ConfigStore.lua`.
@@ -56,6 +63,7 @@ until each subsystem is mechanically moved and validated.
   inside table constructors; no remaining candidates found.
 - Current dependency direction:
   `Main.lua -> Runtime.lua`,
+  `Main.lua -> Controllers/Dodge.lua`,
   `Main.lua -> Systems/SkillFX.lua`,
   `Main.lua -> Systems/ConfigStore.lua -> Config.lua`.
 - Static Luau CLI validation could not run because no `luau` binary is
