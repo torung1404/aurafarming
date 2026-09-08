@@ -104,19 +104,6 @@ local NavigationGoal: Vector3? = nil
 local GoalTarget: Model? = nil
 local LastDirectDecisionAt = 0
 
-local ActivePath: Path? = nil
-local PathWaypoints: { PathWaypoint }? = nil
-local PathIndex = 2
-local PathGoal: Vector3? = nil
-local PathComputing = false
-local PathRequestSerial = 0
-local LastPathBuildAt = -math.huge
-local PathNeedsRebuild = false
-local PathIssuedIndex = 0
-local PathIssuedAt = 0
-local PathBestWaypointDistance = math.huge
-local ActiveWaypointIssueSerial = 0
-
 local RecoveryGoal: Vector3? = nil
 local RecoveryUntil = 0
 local SteeringTried = false
@@ -401,10 +388,25 @@ end
 MovementController = MovementControllerModule.new({
 	Config = Config,
 	RuntimeState = RuntimeState,
+	PathfindingService = PathfindingService,
 	getCharacter = function() return Character end,
 	getHumanoid = function() return Humanoid end,
 	getRoot = function() return Root end,
 	getTarget = function() return Target end,
+	getEnabled = function() return Enabled end,
+	getRunning = function() return Running end,
+	alive = function() return alive() end,
+	getState = function() return State end,
+	setNavigationState = function(nextState) setNavigationState(nextState) end,
+	getNavigationGoal = function() return NavigationGoal end,
+	beginLocalRecovery = function(goal, duration)
+		RecoveryGoal = goal
+		RecoveryUntil = duration or 0
+	end,
+	setBestGoalMetric = function(value)
+		LastMeaningfulProgressAt = os.clock()
+		BestGoalMetric = value
+	end,
 	pointIsSafeFromHazards = function(position) return pointIsSafeFromHazards(position) end,
 })
 local function makeRaycastParams(target: Model?): RaycastParams
@@ -519,8 +521,8 @@ DodgeController = DodgeControllerModule.new({
 	getState = function() return State end,
 	setNavigationState = function(nextState) setNavigationState(nextState) end,
 	getNavigationGoal = function() return NavigationGoal end,
-	getPathWaypoints = function() return PathWaypoints end,
-	getPathIndex = function() return PathIndex end,
+	getPathWaypoints = function() return MovementController.PathWaypoints end,
+	getPathIndex = function() return MovementController.PathIndex end,
 	getRecoveryGoal = function() return RecoveryGoal end,
 	getExploreGoal = function() return ExploreGoal end,
 	setBestGoalMetric = function(value) BestGoalMetric = value end,
@@ -738,7 +740,7 @@ local function navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vect
 end
 
 local function upcomingMovementGoal(): Vector3?
-	return MovementController:upcomingMovementGoal(State, NavigationGoal, PathWaypoints, PathIndex, RecoveryGoal, ExploreGoal)
+	return MovementController:upcomingMovementGoal(State, NavigationGoal, MovementController.PathWaypoints, MovementController.PathIndex, RecoveryGoal, ExploreGoal)
 end
 
 local function acquireBestTarget(): Model?
@@ -1473,27 +1475,11 @@ stopTranslation = function()
 	MovementController:stopTranslation()
 end
 local function disposePath()
-	disconnect(RuntimeState.PathBlockedConnection)
-	RuntimeState.PathBlockedConnection = nil
-	if ActivePath then
-		ActivePath:Destroy()
-	end
-	ActivePath = nil
-	PathWaypoints = nil
-	PathIndex = 2
-	PathGoal = nil
-	PathNeedsRebuild = false
-	PathIssuedIndex = 0
-	PathIssuedAt = 0
-	PathBestWaypointDistance = math.huge
-	RuntimeState.ActivePathGeneration = 0
-	ActiveWaypointIssueSerial = 0
+	MovementController:disposePath()
 end
 
 cancelPathRequest = function()
-	PathRequestSerial += 1
-	PathComputing = false
-	disposePath()
+	MovementController:cancelPathRequest()
 end
 
 setNavigationState = function(newState: string)
@@ -1525,18 +1511,7 @@ local function resetProgress(target: Model?, goal: Vector3?)
 end
 
 pathRemainingMetric = function(): number
-	if not Root or not NavigationGoal then
-		return math.huge
-	end
-	if State ~= NavigationState.PATH or not PathWaypoints or not PathWaypoints[PathIndex] then
-		return (NavigationGoal - Root.Position).Magnitude
-	end
-	local metric = (PathWaypoints[PathIndex].Position - Root.Position).Magnitude
-	for index = PathIndex, #PathWaypoints - 1 do
-		metric += (PathWaypoints[index + 1].Position - PathWaypoints[index].Position).Magnitude
-	end
-	metric += (NavigationGoal - PathWaypoints[#PathWaypoints].Position).Magnitude
-	return metric
+	return MovementController:pathRemainingMetric(NavigationGoal)
 end
 
 local function markMeaningfulProgress()
@@ -1590,137 +1565,15 @@ local function beginLocalRecovery(goal: Vector3)
 end
 
 local function issueCurrentWaypoint()
-	if State ~= NavigationState.PATH or not Humanoid or not Root or not PathWaypoints then
-		return
-	end
-	local waypoint = PathWaypoints[PathIndex]
-	if not waypoint then
-		disposePath()
-		setNavigationState(NavigationState.IDLE)
-		return
-	end
-	if PathIssuedIndex == PathIndex then
-		return
-	end
-	PathIssuedIndex = PathIndex
-	PathIssuedAt = os.clock()
-	PathBestWaypointDistance = (waypoint.Position - Root.Position).Magnitude
-	RuntimeState.WaypointIssueSerial += 1
-	ActiveWaypointIssueSerial = RuntimeState.WaypointIssueSerial
-	if waypoint.Action == Enum.PathWaypointAction.Jump then
-		Humanoid.Jump = true
-	end
-	commandMovement(Vector3.new(waypoint.Position.X - Root.Position.X, 0, waypoint.Position.Z - Root.Position.Z), NavigationState.PATH)
+	MovementController:issueCurrentWaypoint()
 end
 
 local function requestPath(goal: Vector3): boolean
-	if not alive() or not Target or PathComputing then
-		return false
-	end
-	local now = os.clock()
-	if now - LastPathBuildAt < Config.PathRebuildCooldown then
-		return false
-	end
-	PathRequestSerial += 1
-	local requestId = PathRequestSerial
-	local expectedTarget = Target
-	local expectedCharacter = Character
-	local origin = Root.Position
-	PathComputing = true
-	LastPathBuildAt = now
-	disposePath()
-	task.spawn(function()
-		local newPath = PathfindingService:CreatePath({
-			AgentRadius = Config.AgentRadius,
-			AgentHeight = Config.AgentHeight,
-			AgentCanJump = true,
-			AgentCanClimb = true,
-			WaypointSpacing = Config.WaypointSpacing,
-		})
-		local ok = pcall(function()
-			newPath:ComputeAsync(origin, goal)
-		end)
-		if requestId ~= PathRequestSerial then
-			newPath:Destroy()
-			return
-		end
-		PathComputing = false
-		if not Enabled or not Running or not alive() or Target ~= expectedTarget or Character ~= expectedCharacter then
-			newPath:Destroy()
-			return
-		end
-		local waypoints = ok and newPath.Status == Enum.PathStatus.Success and newPath:GetWaypoints() or nil
-		if not waypoints or #waypoints < 2 then
-			newPath:Destroy()
-			RecoveryGoal = nil
-			RecoveryUntil = 0
-			setNavigationState(NavigationState.RECOVERY)
-			return
-		end
-		ActivePath = newPath
-		RuntimeState.ActivePathGeneration = requestId
-		PathWaypoints = waypoints
-		PathIndex = 2
-		PathGoal = goal
-		PathIssuedIndex = 0
-		PathNeedsRebuild = false
-		ActiveWaypointIssueSerial = 0
-		RuntimeState.PathBlockedConnection = newPath.Blocked:Connect(function(blockedIndex)
-			if RuntimeState.ActivePathGeneration == requestId and requestId == PathRequestSerial and blockedIndex >= PathIndex then
-				PathNeedsRebuild = true
-			end
-		end)
-		setNavigationState(NavigationState.PATH)
-		BestGoalMetric = pathRemainingMetric()
-		-- The async compute callback publishes state only. The next Heartbeat issues MoveTo.
-	end)
-	return true
+	return MovementController:requestPath(goal)
 end
 
 local function updatePathNavigation()
-	if State ~= NavigationState.PATH or not Root or not PathWaypoints then
-		return
-	end
-	if PathNeedsRebuild then
-		beginLocalRecovery(NavigationGoal or Root.Position)
-		requestPath(NavigationGoal or Root.Position)
-		return
-	end
-	local waypoint = PathWaypoints[PathIndex]
-	if not waypoint then
-		disposePath()
-		setNavigationState(NavigationState.IDLE)
-		return
-	end
-	-- A published path is not monitorable until its current waypoint has been issued.
-	-- Returning here guarantees timeout/progress logic never observes PathIssuedAt == 0.
-	if PathIssuedIndex ~= PathIndex or PathIssuedAt <= 0 or ActiveWaypointIssueSerial <= 0 then
-		issueCurrentWaypoint()
-		return
-	end
-	local waypointDistance = (waypoint.Position - Root.Position).Magnitude
-	-- MoveToFinished carries no path/waypoint identity. Position is the sole safe
-	-- completion authority; a delayed event can therefore never advance this path.
-	if waypointDistance <= Config.WaypointReachedDistance then
-		local advanced = PathBestWaypointDistance - waypointDistance >= Config.MeaningfulProgressDistance
-		PathIndex += 1
-		PathIssuedIndex = 0
-		PathIssuedAt = 0
-		ActiveWaypointIssueSerial = 0
-		if advanced then
-			markMeaningfulProgress()
-		end
-		issueCurrentWaypoint()
-		return
-	end
-	if waypointDistance <= PathBestWaypointDistance - Config.MeaningfulProgressDistance then
-		PathBestWaypointDistance = waypointDistance
-		markMeaningfulProgress()
-	end
-	if PathIssuedIndex == PathIndex and PathIssuedAt > 0 and os.clock() - PathIssuedAt >= Config.WaypointTimeout then
-		PathNeedsRebuild = true
-		return
-	end
+	MovementController:updatePathNavigation()
 end
 
 local function updateDirectMovement()
@@ -1786,7 +1639,7 @@ local function updateRecoveryMovement()
 		end
 	end
 	commandMovement(Vector3.zero, false)
-	if State ~= NavigationState.RETREAT and not PathComputing and NavigationGoal then
+	if State ~= NavigationState.RETREAT and not MovementController.PathComputing and NavigationGoal then
 		requestPath(NavigationGoal)
 	end
 end
@@ -1797,13 +1650,13 @@ local function decideNavigation()
 	end
 	local now = os.clock()
 	if State == NavigationState.PATH then
-		if PathGoal and (NavigationGoal - PathGoal).Magnitude >= Config.PathGoalChangeDistance then
-			PathNeedsRebuild = true
+		if MovementController.PathGoal and (NavigationGoal - MovementController.PathGoal).Magnitude >= Config.PathGoalChangeDistance then
+			MovementController.PathNeedsRebuild = true
 		end
 		return
 	end
 	if
-		(State == NavigationState.RECOVERY or State == NavigationState.STEER) and (PathComputing or now < RecoveryUntil)
+		(State == NavigationState.RECOVERY or State == NavigationState.STEER) and (MovementController.PathComputing or now < RecoveryUntil)
 	then
 		return
 	end
@@ -1872,7 +1725,7 @@ local function resetNavigationForTarget(newTarget: Model?)
 	RecoveryGoal = nil
 	RecoveryUntil = 0
 	cancelPathRequest()
-	LastPathBuildAt = -math.huge
+	MovementController.LastPathBuildAt = -math.huge
 	resetProgress(newTarget, nil)
 	setNavigationState(NavigationState.IDLE)
 	if not newTarget then
@@ -2113,7 +1966,7 @@ local function updateTargetAndObjective()
 	if distance3D <= Config.PreferredCombatDistance then
 		-- Invalidate an in-flight ComputeAsync as well as any published path. Merely
 		-- disposing ActivePath would still allow the old callback to publish PATH.
-		if State ~= NavigationState.COMBAT or PathComputing or ActivePath then
+		if State ~= NavigationState.COMBAT or MovementController.PathComputing or MovementController.ActivePath then
 			cancelPathRequest()
 		end
 		NavigationGoal = nil
@@ -2138,7 +1991,7 @@ local function updateTargetAndObjective()
 		if ProgressTarget ~= Target or ProgressGoalAnchor ~= NavigationGoal then
 			resetProgress(Target, NavigationGoal)
 		end
-		if not PathComputing and (State ~= NavigationState.PATH or not PathWaypoints) then
+		if not MovementController.PathComputing and (State ~= NavigationState.PATH or not MovementController.PathWaypoints) then
 			cancelPathRequest()
 			setNavigationState(NavigationState.PATH)
 			requestPath(NavigationGoal)
