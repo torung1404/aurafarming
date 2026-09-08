@@ -49,6 +49,7 @@ print("[BOOT2] CONFIG")
 local ConfigStore = require(script.Parent.Systems.ConfigStore)
 local SkillFXSystem = require(script.Parent.Systems.SkillFX)
 local DodgeControllerModule = require(script.Parent.Controllers.Dodge)
+local ReplayControllerModule = require(script.Parent.Controllers.Replay)
 
 local NavigationState = {
 	IDLE = "IDLE",
@@ -295,6 +296,7 @@ local isInsideAnyEnemyFolder
 local hazardNameHint
 local SkillFXController
 local DodgeController
+local ReplayController
 
 local function isBossTarget(model: Model): boolean
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
@@ -1000,216 +1002,44 @@ local function buttonHasText(button: GuiButton, expected: string): boolean
 	return false
 end
 
+ReplayController = ReplayControllerModule.new({
+	Config = Config,
+	RuntimeState = RuntimeState,
+	GuiService = GuiService,
+	VirtualInputManager = VirtualInputManager,
+	guiRoots = guiRoots,
+	visibleGui = visibleGui,
+	buttonHasText = buttonHasText,
+	isRunning = function() return Running end,
+	telemetry = telemetry,
+})
+
 local function findReplayButton(): GuiButton?
-	local context = RuntimeState.ReplayConfirmRoot
-	if context and context:IsDescendantOf(game) and visibleGui(context) then
-		for _, object in ipairs(context:GetDescendants()) do
-			if object:IsA("GuiButton") and visibleGui(object) and buttonHasText(object, "yes") then
-				print("[REPLAY] confirm=" .. object:GetFullName())
-				return object
-			end
-		end
-	end
-	for _, uiRoot in ipairs(guiRoots()) do
-		for _, object in ipairs(uiRoot:GetDescendants()) do
-			if object:IsA("GuiButton") and visibleGui(object) and buttonHasText(object, "yes") then
-				local modal: Instance? = object.Parent
-				for _ = 1, 8 do
-					if not modal or not modal:IsA("GuiObject") then
-						break
-					end
-					local hasNo = false
-					local hasReplayClue = false
-					for _, child in ipairs(modal:GetDescendants()) do
-						if child:IsA("GuiButton") and visibleGui(child) then
-							hasNo = hasNo or buttonHasText(child, "no") or buttonHasText(child, "cancel")
-						end
-						if (child:IsA("TextLabel") or child:IsA("TextButton")) and visibleGui(child) then
-							local text = child.Text:lower()
-							hasReplayClue = hasReplayClue
-								or text:find("replay", 1, true) ~= nil
-								or text:find("again", 1, true) ~= nil
-								or text:find("retry", 1, true) ~= nil
-								or text:find("dungeon", 1, true) ~= nil
-						end
-					end
-					if hasNo and hasReplayClue then
-						if RuntimeState.ReplayConfirmRoot ~= modal then
-							print("[REPLAY] confirm detected")
-						end
-						RuntimeState.ReplayConfirmRoot = modal
-						RuntimeState.ReplayModal = modal
-						return object
-					end
-					modal = modal.Parent
-				end
-			end
-		end
-	end
-	return nil
+	return ReplayController:findButton()
 end
 
 local function clickReplayButton(button: GuiButton)
-	if not VirtualInputManager then
-		return
-	end
-	local position = button.AbsolutePosition + button.AbsoluteSize * 0.5
-	local inset = select(1, GuiService:GetGuiInset())
-	local screenGui = button:FindFirstAncestorOfClass("ScreenGui")
-	if not screenGui or not screenGui.IgnoreGuiInset then
-		position += inset
-	end
-	pcall(function()
-		VirtualInputManager:SendMouseMoveEvent(position.X, position.Y, game)
-		VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, true, game, 0)
-		task.delay(0.04, function()
-			VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, false, game, 0)
-		end)
-	end)
+	ReplayController:clickButton(button)
 end
 
 local function setReplayPhase(phase: string)
-	if RuntimeState.ReplayPhase ~= phase then
-		RuntimeState.ReplayPhase = phase
-		RuntimeState.ReplayPhaseEnteredAt = os.clock()
-		print("[REPLAY] phase=" .. phase)
-	end
+	ReplayController:setPhase(phase)
 end
 
 local function findReplayResult(): GuiObject?
-	for _, uiRoot in ipairs(guiRoots()) do
-		for _, object in ipairs(uiRoot:GetDescendants()) do
-			if (object:IsA("TextLabel") or object:IsA("TextButton")) and visibleGui(object) then
-				local normalized = object.Text:lower():gsub("[%s%p_]", "")
-				if normalized:find("dungeoncompleted", 1, true) or normalized:find("dungeonfailed", 1, true) then
-					local kind = normalized:find("dungeonfailed", 1, true) and "FAILED" or "COMPLETED"
-					if RuntimeState.ReplayResultKind ~= kind then
-						RuntimeState.ReplayResultKind = kind
-						print("[REPLAY] result=" .. kind)
-					end
-					return object:FindFirstAncestorWhichIsA("GuiObject") or object
-				end
-			end
-		end
-	end
-	return nil
+	return ReplayController:findResult()
 end
 
 local function findReplayOpener(): GuiButton?
-	local context = RuntimeState.ReplayCompletionRoot
-	if context and context:IsDescendantOf(game) and visibleGui(context) then
-		for _, object in ipairs(context:GetDescendants()) do
-			if object:IsA("GuiButton") and visibleGui(object)
-				and (buttonHasText(object, "replay") or buttonHasText(object, "retry") or buttonHasText(object, "play again")) then
-				print("[REPLAY] opener=" .. object:GetFullName())
-				return object
-			end
-		end
-	end
-	for _, uiRoot in ipairs(guiRoots()) do
-		for _, object in ipairs(uiRoot:GetDescendants()) do
-			if (object:IsA("TextLabel") or object:IsA("TextButton")) and visibleGui(object) then
-				local normalized = object.Text:lower():gsub("[%s%p_]", "")
-				if normalized == "replay" or normalized == "replaydungeon" or normalized == "playagain" or normalized == "retry" then
-					local current: Instance? = object
-					for _ = 1, 8 do
-						if not current then break end
-						if current:IsA("GuiButton") and visibleGui(current) then return current end
-						current = current.Parent
-					end
-				end
-			end
-		end
-	end
-	return nil
+	return ReplayController:findOpener()
 end
 
 local function tryReplayDungeon()
-	local now = os.clock()
-	if not Running or not Config.AutoReplay then return end
-	local phase = RuntimeState.ReplayPhase
-	local phaseAge = now - RuntimeState.ReplayPhaseEnteredAt
-	if RuntimeState.ReplayResultScanDirty or phase ~= "IDLE" then
-		RuntimeState.ReplayResultScanDirty = false
-		local result = findReplayResult()
-		if result then
-			RuntimeState.ReplayCompletionRoot = result
-			RuntimeState.ReplayCompletionDetected = true
-			if phase == "IDLE" or phase == "ARMED" then
-				setReplayPhase("RESULT_DETECTED")
-			end
-			phase = RuntimeState.ReplayPhase
-		end
-	end
-	if RuntimeState.ReplayRetries > 5 then
-		setReplayPhase("IDLE")
-		return
-	end
-	if phase == "IDLE" then
-		return
-	end
-	if phase == "WAIT_NEW_ROUND" then
-		if RuntimeState.DungeonIdentity ~= RuntimeState.ReplayDungeonIdentity then
-			setReplayPhase("IDLE")
-			return
-		end
-		if phaseAge > 3 then
-			setReplayPhase("RESULT_DETECTED")
-		end
-		return
-	end
-	if phase == "ARMED" and RuntimeState.ReplayCompletionDetected then setReplayPhase("RESULT_DETECTED"); phase = RuntimeState.ReplayPhase end
-	if phase == "RESULT_DETECTED" or phase == "ARMED" then
-		local opener = RuntimeState.ReplayOpener
-		if not opener or not opener:IsDescendantOf(game) or not visibleGui(opener) then opener = findReplayOpener(); RuntimeState.ReplayOpener = opener end
-		if opener and now - RuntimeState.ReplayLastActionAt >= 0.75 then
-			print("[REPLAY] click opener")
-			clickReplayButton(opener)
-			RuntimeState.ReplayLastActionAt = now
-			RuntimeState.ReplayRetries += 1
-			setReplayPhase("OPENING")
-			return
-		end
-		if phaseAge > 8 then setReplayPhase("IDLE") end
-		return
-	end
-	local yes = RuntimeState.ReplayYesButton
-	if not yes or not yes:IsDescendantOf(game) or not visibleGui(yes) then yes = findReplayButton(); RuntimeState.ReplayYesButton = yes end
-	if yes and now - RuntimeState.ReplayLastActionAt >= 0.75 then
-		print("[REPLAY] click yes")
-		clickReplayButton(yes)
-		RuntimeState.ReplayAwaitingClose = yes
-		RuntimeState.ReplayLastActionAt = now
-		RuntimeState.ReplayRetries += 1
-		setReplayPhase("CONFIRMING")
-		return
-	end
-	if phase == "CONFIRMING" and RuntimeState.ReplayAwaitingClose and (not RuntimeState.ReplayAwaitingClose:IsDescendantOf(game) or not visibleGui(RuntimeState.ReplayAwaitingClose)) then
-		RuntimeState.ReplayAwaitingClose = nil
-		RuntimeState.ReplayDungeonIdentity = RuntimeState.DungeonIdentity
-		print("[REPLAY] waiting new round")
-		setReplayPhase("WAIT_NEW_ROUND")
-		return
-	end
-	if (phase == "OPENING" or phase == "CONFIRMING") and phaseAge > 8 then
-		setReplayPhase("RESULT_DETECTED")
-	end
+	ReplayController:tryReplayDungeon()
 end
+
 local function armReplayToken(reason: string)
-	if Config.AutoReplay and RuntimeState.ReplayPhase == "IDLE" then
-		RuntimeState.ReplayArmedAt = os.clock()
-		RuntimeState.ReplayRetries = 0
-		RuntimeState.ReplayCompletionRoot = nil
-		RuntimeState.ReplayOpener = nil
-		RuntimeState.ReplayConfirmRoot = nil
-		RuntimeState.ReplayYesButton = nil
-		RuntimeState.ReplayResultScanDirty = true
-		RuntimeState.ReplayCompletionDetected = false
-		setReplayPhase("ARMED")
-		print("[REPLAY] ARMED reason=" .. reason)
-		telemetry("REPLAY_ARM", reason)
-		RuntimeState.sendStatusWebhook("REPLAY_ARMED")
-	end
+	ReplayController:arm(reason)
 end
 
 local bootstrapDungeon
