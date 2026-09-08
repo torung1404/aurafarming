@@ -23,10 +23,11 @@ until each subsystem is mechanically moved and validated.
 - `Controllers/Dodge.lua`
 - `Controllers/Replay.lua`
 - `Controllers/Targeting.lua`
+- `Controllers/Movement.lua` (partial: primitives and steering helpers)
 
 ## Remaining monolith sections
 
-- Movement/navigation
+- Movement/navigation pathfinding, recovery/explore, and update orchestration
 - Combat input
 - Dungeon/timer/lifecycle resolution
 - Obsidian UI
@@ -66,6 +67,13 @@ until each subsystem is mechanically moved and validated.
 - Targeting enemy cache, valid-target filtering, registration, nearest target
   acquisition, target metrics, target decision timing, and skill-range enemy
   lookup moved into `Controllers/Targeting.lua`.
+- Movement primitives moved into `Controllers/Movement.lua`: movement command
+  dispatch, release/stop translation, raycast params, ground projection, ground
+  support checks, and direct-route clearance.
+- Movement steering helpers moved into `Controllers/Movement.lua`: target
+  navigation goal resolution, upcoming movement objective lookup, ray clearance,
+  and recovery detour selection. Main retains thin wrappers while pathfinding
+  and update orchestration are still pending.
 - Fixed invalid `Combat` table constructor in `Main.lua`; table keys are now
   direct fields instead of `Combat.Field = value`.
 - Removed duplicate `config.AutoStart = true` from `Systems/ConfigStore.lua`.
@@ -76,6 +84,7 @@ until each subsystem is mechanically moved and validated.
   `Main.lua -> Controllers/Dodge.lua`,
   `Main.lua -> Controllers/Replay.lua`,
   `Main.lua -> Controllers/Targeting.lua`,
+  `Main.lua -> Controllers/Movement.lua`,
   `Main.lua -> Systems/SkillFX.lua`,
   `Main.lua -> Systems/ConfigStore.lua -> Config.lua`.
 - Static Luau CLI validation could not run because no `luau` binary is
