@@ -82,6 +82,118 @@ function Movement:directRouteClear(goal: Vector3, target: Model?): boolean
 	return self:hasGroundSupport(goal, target)
 end
 
+function Movement:navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vector3
+	local root = self.getRoot()
+	if not root then
+		return enemyRoot.Position
+	end
+	local flat = Vector3.new(enemyRoot.Position.X - root.Position.X, 0, enemyRoot.Position.Z - root.Position.Z)
+	local height = math.abs(enemyRoot.Position.Y - root.Position.Y)
+	local targetBelow = enemyRoot.Position.Y < root.Position.Y - self.Config.DirectVerticalTolerance
+	if targetBelow and (flat.Magnitude <= 15 or height > flat.Magnitude) then
+		local targetGround, foundTargetGround = self:projectToWalkableGround(enemyRoot.Position, target)
+		if foundTargetGround then
+			local chosen: Vector3? = nil
+			for _, radius in ipairs({ 6, 12 }) do
+				for index = 0, 7 do
+					local angle = index * math.pi * 2 / 8
+					local sample = enemyRoot.Position
+						+ Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+					local candidate, foundCandidate = self:projectToWalkableGround(sample, target)
+					if foundCandidate and math.abs(candidate.Y - targetGround.Y) <= self.Config.DirectVerticalTolerance then
+						chosen = candidate
+						break
+					end
+				end
+				if chosen then
+					break
+				end
+			end
+			return chosen or targetGround
+		end
+	end
+	local desired = enemyRoot.Position
+	if flat.Magnitude > 0.01 then
+		local horizontalHold = math.sqrt(math.max(0, self.Config.PreferredCombatDistance ^ 2 - height ^ 2))
+		desired = enemyRoot.Position - flat.Unit * horizontalHold
+	end
+	-- Probe downward close to the target Y, avoiding the wrong upper floor that caused the 15-stud deadlock.
+	local targetGround, targetGroundFound = self:projectToWalkableGround(enemyRoot.Position, target)
+	local approachGround, approachGroundFound = self:projectToWalkableGround(desired, target)
+	if targetGroundFound and (not approachGroundFound or math.abs(approachGround.Y - targetGround.Y) > 6) then
+		return targetGround
+	end
+	if approachGroundFound then
+		return approachGround
+	end
+	if targetGroundFound then
+		return targetGround
+	end
+	return desired
+end
+
+function Movement:upcomingMovementGoal(state, navigationGoal, pathWaypoints, pathIndex, recoveryGoal, exploreGoal): Vector3?
+	if state == "PATH" and pathWaypoints and pathWaypoints[pathIndex] then
+		return pathWaypoints[pathIndex].Position
+	end
+	if state == "RECOVERY" or state == "STEER" or state == "RETREAT" then
+		return recoveryGoal or navigationGoal
+	end
+	if state == "EXPLORE" then
+		return exploreGoal
+	end
+	return navigationGoal
+end
+
+function Movement:rayClearance(origin: Vector3, direction: Vector3, target: Model?): number
+	local result = workspace:Raycast(
+		origin + Vector3.new(0, 2.5, 0),
+		direction.Unit * self.Config.DetourProbeDistance,
+		self:makeRaycastParams(target)
+	)
+	return result and result.Distance or self.Config.DetourProbeDistance
+end
+
+function Movement:chooseRecoveryDetour(goal: Vector3, retreat: boolean?, dodgeRouteClear): Vector3?
+	local root = self.getRoot()
+	local target = self.getTarget()
+	if not root then
+		return nil
+	end
+	local flatGoal = Vector3.new(goal.X - root.Position.X, 0, goal.Z - root.Position.Z)
+	if flatGoal.Magnitude <= 0.01 then
+		return nil
+	end
+	local forward = flatGoal.Unit
+	local candidates = {}
+	local angle = math.atan2(forward.Z, forward.X)
+	for index = 0, 11 do
+		local heading = angle + index * math.pi / 6
+		table.insert(candidates, Vector3.new(math.cos(heading), 0, math.sin(heading)))
+	end
+	local bestGoal: Vector3? = nil
+	local bestScore = -math.huge
+	for _, direction in ipairs(candidates) do
+		local clearance = self:rayClearance(root.Position, direction, target)
+		local candidate = root.Position + direction * math.max(3, clearance - 1.5)
+		local grounded, foundGround = self:projectToWalkableGround(candidate, target)
+		if
+			foundGround
+			and self:directRouteClear(grounded, target)
+			and dodgeRouteClear(grounded)
+			and self.pointIsSafeFromHazards(grounded)
+		then
+			local goalGain = (goal - root.Position).Magnitude - (goal - grounded).Magnitude
+			local heightGain = math.abs(goal.Y - root.Position.Y) - math.abs(goal.Y - grounded.Y)
+			local score = clearance + goalGain * 2 + heightGain + forward:Dot(direction) * 3
+			if score > bestScore and (not retreat or goalGain > 1) then
+				bestScore, bestGoal = score, grounded
+			end
+		end
+	end
+	return bestGoal
+end
+
 function Movement:commandMovement(direction: Vector3, _owner: string?)
 	local root = self.getRoot()
 	local humanoid = self.getHumanoid()
