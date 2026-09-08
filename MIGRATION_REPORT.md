@@ -23,11 +23,11 @@ until each subsystem is mechanically moved and validated.
 - `Controllers/Dodge.lua`
 - `Controllers/Replay.lua`
 - `Controllers/Targeting.lua`
-- `Controllers/Movement.lua` (partial: primitives, steering helpers, and pathfinding)
+- `Controllers/Movement.lua` (partial: primitives, steering helpers, pathfinding, recovery, and explore)
 
 ## Remaining monolith sections
 
-- Movement/navigation recovery/explore and update orchestration
+- Movement/navigation update orchestration
 - Combat input
 - Dungeon/timer/lifecycle resolution
 - Obsidian UI
@@ -79,6 +79,11 @@ until each subsystem is mechanically moved and validated.
   handling, current waypoint issuing, rebuild flagging, and path update logic.
   Main retains thin wrappers and reads Movement-owned path state only where
   not-yet-migrated navigation logic still needs it.
+- Movement recovery/explore moved into `Controllers/Movement.lua`: recovery
+  goal/timeout/steering ownership, stuck recovery policy, explored-cell
+  history, explore direction scoring, explore goal selection, descent
+  extension/release, and explore/recovery movement update entrypoints. Main
+  keeps adapters while final movement orchestration is pending.
 - Fixed invalid `Combat` table constructor in `Main.lua`; table keys are now
   direct fields instead of `Combat.Field = value`.
 - Removed duplicate `config.AutoStart = true` from `Systems/ConfigStore.lua`.
