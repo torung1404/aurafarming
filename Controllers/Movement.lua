@@ -48,8 +48,19 @@ function Movement.new(context)
 	self.DescentRiseStrikes = 0
 	self.ExploredCells = {} :: { [string]: boolean }
 	self.ExploredCellOrder = {} :: { string }
-	self.NavigationState = context.NavigationState
-	self.State = self.NavigationState.IDLE
+self.NavigationState = ctx.NavigationState or {
+	IDLE = "IDLE",
+	DIRECT = "DIRECT",
+	STEER = "STEER",
+	RETREAT = "RETREAT",
+	PATH = "PATH",
+	COMBAT = "COMBAT",
+	RECOVERY = "RECOVERY",
+	DODGE = "DODGE",
+	EXPLORE = "EXPLORE",
+}
+
+self.State = self.NavigationState.IDLE
 	self.NavigationGoal = nil :: Vector3?
 	self.GoalTarget = nil :: Model?
 	self.LastDirectDecisionAt = 0
