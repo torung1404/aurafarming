@@ -411,6 +411,8 @@ end
 MovementController = MovementControllerModule.new({
 	Config = Config,
 	RuntimeState = RuntimeState,
+	PathfindingService = PathfindingService,
+	NavigationState = NavigationState,
 	getCharacter = function() return Character end,
 	getHumanoid = function() return Humanoid end,
 	getRoot = function() return Root end,
