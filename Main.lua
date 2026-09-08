@@ -52,6 +52,11 @@ local DodgeControllerModule = require(script.Parent.Controllers.Dodge)
 local ReplayControllerModule = require(script.Parent.Controllers.Replay)
 local TargetingControllerModule = require(script.Parent.Controllers.Targeting)
 local MovementControllerModule = require(script.Parent.Controllers.Movement)
+local CombatControllerModule = require(script.Parent.Controllers.Combat)
+local LifecycleControllerModule = require(script.Parent.Controllers.Lifecycle)
+local DungeonResolverModule = require(script.Parent.Systems.DungeonResolver)
+local TimerResolverModule = require(script.Parent.Systems.TimerResolver)
+local ObsidianUIModule = require(script.Parent.UI.ObsidianUI)
 
 local NavigationState = {
 	IDLE = "IDLE",
@@ -300,6 +305,11 @@ local hazardNameHint
 local SkillFXController
 local DodgeController
 local ReplayController
+local ObsidianUI
+local TimerResolver
+local DungeonResolver
+local LifecycleController
+local CombatController
 
 local function isBossTarget(model: Model): boolean
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
@@ -531,7 +541,7 @@ DodgeController = DodgeControllerModule.new({
 	end,
 	alive = function() return Running and alive() end,
 	validTarget = validTarget,
-	restoreRotation = function() restoreRotation() end,
+	restoreRotation = function() CombatController:restoreRotation() end,
 	commandMovement = function(direction, jump) commandMovement(direction, jump) end,
 	cancelPathRequest = function() cancelPathRequest() end,
 	makeRaycastParams = makeRaycastParams,
@@ -922,6 +932,101 @@ local function armReplayToken(reason: string)
 	ReplayController:arm(reason)
 end
 
+
+CombatController = CombatControllerModule.new({
+	Config = Config,
+	Runtime = RuntimeState,
+	Player = Player,
+	VirtualInputManager = VirtualInputManager,
+	GetCharacter = function() return Character end,
+	GetHumanoid = function() return Humanoid end,
+	GetRoot = function() return Root end,
+	GetTarget = function() return Target end,
+	GetTargetRoot = getTargetRoot,
+	ValidTarget = validTarget,
+	IsBossTarget = isBossTarget,
+	SkillRangeForTarget = skillRangeForTarget,
+	GetNavigationState = function() return MovementController.State or State end,
+	NavigationState = NavigationState,
+})
+
+DungeonResolver = DungeonResolverModule.new({
+	Runtime = RuntimeState,
+	EnemySet = EnemySet,
+	DungeonConnections = DungeonConnections,
+	Normalize = normalizeTargetName,
+	DisconnectAll = disconnectAll,
+	RegisterEnemy = registerEnemy,
+	RegisterSkillModel = registerSkillModel,
+	UnregisterSkillModel = unregisterSkillModel,
+})
+
+TimerResolver = TimerResolverModule.new({
+	Runtime = RuntimeState,
+	RefreshDungeonReferences = function()
+		if DungeonResolver and DungeonResolver.refresh then
+			return DungeonResolver:refresh()
+		elseif RuntimeState.refreshDungeonReferences then
+			return RuntimeState.refreshDungeonReferences()
+		end
+	end,
+	GuiRoots = guiRoots,
+	VisibleGui = visibleGui,
+	Normalize = normalizeTargetName,
+})
+
+LifecycleController = LifecycleControllerModule.new({
+	Runtime = RuntimeState,
+	EnemySet = EnemySet,
+	IsValidCombatTarget = isValidCombatTarget,
+	RefreshDungeonReferences = function()
+		if DungeonResolver and DungeonResolver.refresh then
+			return DungeonResolver:refresh()
+		elseif RuntimeState.refreshDungeonReferences then
+			return RuntimeState.refreshDungeonReferences()
+		end
+	end,
+	CachedStartScreen = cachedStartScreen,
+	TryStartDungeon = tryStartDungeon,
+	TryReplayDungeon = tryReplayDungeon,
+	ArmReplayToken = armReplayToken,
+	FindReplayResult = findReplayResult,
+	SetReplayPhase = setReplayPhase,
+	ResetRuntimeForNewDungeon = function()
+		if resetRuntimeForNewDungeon then
+			return resetRuntimeForNewDungeon()
+		end
+	end,
+	GetRemainingDungeonTime = function()
+		if TimerResolver and TimerResolver.getRemainingTime then
+			return TimerResolver:getRemainingTime()
+		elseif RuntimeState.remainingDungeonTime then
+			return RuntimeState.remainingDungeonTime()
+		end
+	end,
+})
+
+ObsidianUI = ObsidianUIModule.new({
+	Config = Config,
+	Runtime = RuntimeState,
+	Player = Player,
+	GetRunning = function() return Running end,
+	SetRunning = function(value) return setRunning(value) end,
+	SaveConfig = saveConfig,
+	GetTarget = function() return Target end,
+	GetRoot = function() return Root end,
+	GetTargetRoot = getTargetRoot,
+	GetNavigationState = function() return MovementController.State or State end,
+	NavigationState = NavigationState,
+	GetRemainingDungeonTime = function()
+		if TimerResolver and TimerResolver.getRemainingTime then
+			return TimerResolver:getRemainingTime()
+		elseif RuntimeState.remainingDungeonTime then
+			return RuntimeState.remainingDungeonTime()
+		end
+	end,
+})
+
 local bootstrapDungeon
 bootstrapDungeon = function(root: Instance)
 	local startedAt = os.clock()
@@ -1294,7 +1399,7 @@ local function updateTargetFacing()
 			return
 		end
 	end
-	restoreRotation()
+	CombatController:restoreRotation()
 end
 
 local function sendKey(key: Enum.KeyCode)
@@ -1956,7 +2061,7 @@ local function resetNavigationForTarget(newTarget: Model?)
 	resetProgress(newTarget, nil)
 	setNavigationState(NavigationState.IDLE)
 	if not newTarget then
-		restoreRotation()
+		CombatController:restoreRotation()
 	end
 end
 
@@ -1972,7 +2077,7 @@ local function updateDodgeController(): boolean
 	return DodgeController:update()
 end
 
-local function updateDungeonReplayState()
+local function LifecycleController:update()
 	local now = os.clock()
 	if now - RuntimeState.LastDungeonStateCheckAt < 0.25 then
 		return
@@ -2277,7 +2382,7 @@ local function bindCharacter(character: Model)
 	resetNavigationForTarget(nil)
 	if Running then
 		applyMovementSpeed()
-		disablePlayerControls()
+		CombatController:disablePlayerControls()
 	end
 	for model in pairs(RuntimeState.EnemyCandidates) do
 		registerEnemy(model)
@@ -2310,7 +2415,7 @@ setRunning = function(value: boolean)
 	Config.FarmEnabled = value
 	saveConfig()
 	if value then
-		disablePlayerControls()
+		CombatController:disablePlayerControls()
 		applyMovementSpeed()
 		TargetingController:invalidateDecision()
 		NoTargetSince = os.clock()
@@ -2321,8 +2426,8 @@ setRunning = function(value: boolean)
 		resetNavigationForTarget(nil)
 		stopTranslation()
 		restoreMovementSpeed()
-		restoreRotation()
-		enablePlayerControls()
+		CombatController:restoreRotation()
+		CombatController:enablePlayerControls()
 	end
 end
 
@@ -2524,8 +2629,8 @@ local function shutdown()
 	resetNavigationForTarget(nil)
 	stopTranslation()
 	restoreMovementSpeed()
-	restoreRotation()
-	enablePlayerControls()
+	CombatController:restoreRotation()
+	CombatController:enablePlayerControls()
 	disconnectAll(Connections)
 	disconnectAll(CharacterConnections)
 	clearAimObjects()
@@ -2654,7 +2759,7 @@ table.insert(
 		end
 		local lifecycleStartedAt = os.clock()
 		local lifecycleOk, lifecycleErr = xpcall(function()
-			updateDungeonReplayState()
+			LifecycleController:update()
 		end, function(message)
 			return debug.traceback(tostring(message), 2)
 		end)
@@ -2664,12 +2769,12 @@ table.insert(
 		logPerf("lifecycle", lifecycleStartedAt)
 		if now - RuntimeState.LastHUDUpdateAt >= 0.2 then
 			RuntimeState.LastHUDUpdateAt = now
-			updateObsidianStatus()
+			ObsidianUI:update()
 		end
 		if RuntimeState.RoundPhase ~= "ACTIVE" then
 			setNavigationState(NavigationState.IDLE)
 			stopTranslation()
-			restoreRotation()
+			CombatController:restoreRotation()
 			return
 		end
 		if not Running or not alive() then
@@ -2688,12 +2793,12 @@ table.insert(
 			updateTargetAndObjective()
 			logPerf("targetDecision", targetDecisionStartedAt)
 		end
-		updateTargetFacing()
+		CombatController:updateTargetFacing()
 		local skillTarget, skillRoot, skillDistance = findNearestEnemyInSkillRange()
 		if skillTarget and skillRoot then
 			local previousTarget = Target
 			Target = skillTarget
-			useCombatSkills(skillRoot, skillDistance)
+			CombatController:useCombatSkills(skillRoot, skillDistance)
 			Target = previousTarget
 		end
 		if Config.DodgeEnabled and updateDodgeController() then
@@ -2703,7 +2808,7 @@ table.insert(
 			local enemyRoot = getTargetRoot(Target)
 			if enemyRoot and Root then
 				local distance = (enemyRoot.Position - Root.Position).Magnitude
-				useNormalAttack(distance)
+				CombatController:useNormalAttack(distance)
 			end
 		end
 		if State == NavigationState.DIRECT then
