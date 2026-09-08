@@ -51,6 +51,7 @@ local SkillFXSystem = require(script.Parent.Systems.SkillFX)
 local DodgeControllerModule = require(script.Parent.Controllers.Dodge)
 local ReplayControllerModule = require(script.Parent.Controllers.Replay)
 local TargetingControllerModule = require(script.Parent.Controllers.Targeting)
+local MovementControllerModule = require(script.Parent.Controllers.Movement)
 
 local NavigationState = {
 	IDLE = "IDLE",
@@ -140,6 +141,8 @@ local Combat = {
 }
 
 local TargetingController
+local MovementController
+local pointIsSafeFromHazards
 local HazardSet: { [BasePart]: boolean } = {}
 local SkillFX = {
 	Models = {} :: { [Model]: { Model: Model, SpawnedAt: number, Hitboxes: { [BasePart]: boolean }, Precasts: { [BasePart]: boolean }, LastSeenAt: number } },
@@ -395,41 +398,29 @@ end
 local function registerEnemy(instance: Instance)
 	TargetingController:registerEnemy(instance, Running)
 end
+MovementController = MovementControllerModule.new({
+	Config = Config,
+	RuntimeState = RuntimeState,
+	getCharacter = function() return Character end,
+	getHumanoid = function() return Humanoid end,
+	getRoot = function() return Root end,
+	getTarget = function() return Target end,
+	pointIsSafeFromHazards = function(position) return pointIsSafeFromHazards(position) end,
+})
 local function makeRaycastParams(target: Model?): RaycastParams
-	local parameters = RaycastParams.new()
-	parameters.FilterType = Enum.RaycastFilterType.Exclude
-	local exclusions = {}
-	if Character then
-		table.insert(exclusions, Character)
-	end
-	if target then
-		table.insert(exclusions, target)
-	end
-	parameters.FilterDescendantsInstances = exclusions
-	parameters.IgnoreWater = true
-	parameters.RespectCanCollide = true
-	return parameters
+	return MovementController:makeRaycastParams(target)
 end
 
 local function rootGroundOffset(): number
-	if not Root or not Humanoid then
-		return 3
-	end
-	return math.max(2.5, Humanoid.HipHeight + Root.Size.Y * 0.5)
+	return MovementController:rootGroundOffset()
 end
 
 local function projectToWalkableGround(position: Vector3, target: Model?): (Vector3, boolean)
-	local origin = position + Vector3.new(0, Config.GroundProbeLift, 0)
-	local result = workspace:Raycast(origin, Vector3.new(0, -Config.GroundProbeDepth, 0), makeRaycastParams(target))
-	if not result or result.Normal.Y < math.cos(math.rad(Humanoid and Humanoid.MaxSlopeAngle or 45)) then
-		return position, false
-	end
-	return Vector3.new(position.X, result.Position.Y + rootGroundOffset(), position.Z), true
+	return MovementController:projectToWalkableGround(position, target)
 end
 
 local function hasGroundSupport(position: Vector3, target: Model?): boolean
-	local origin = position + Vector3.new(0, 7, 0)
-	return workspace:Raycast(origin, Vector3.new(0, -Config.GroundSupportDepth, 0), makeRaycastParams(target)) ~= nil
+	return MovementController:hasGroundSupport(position, target)
 end
 
 hazardNameHint = function(part: BasePart): boolean
@@ -739,29 +730,7 @@ local function updateExploreMovement()
 end
 
 local function directRouteClear(goal: Vector3, target: Model?): boolean
-	if not Root or math.abs(goal.Y - Root.Position.Y) > Config.DirectVerticalTolerance then
-		return false
-	end
-	local flatDelta = Vector3.new(goal.X - Root.Position.X, 0, goal.Z - Root.Position.Z)
-	local distance = flatDelta.Magnitude
-	if distance <= Config.WaypointReachedDistance then
-		return true
-	end
-	local obstacle = workspace:Raycast(Root.Position + Vector3.new(0, 2.5, 0), flatDelta, makeRaycastParams(target))
-	if obstacle and obstacle.Distance < distance - 2 then
-		return false
-	end
-	local sampleCount = math.max(1, math.ceil(distance / 3))
-	local previous = Root.Position
-	for index = 1, sampleCount do
-		local sample = Root.Position:Lerp(goal, index / sampleCount)
-		local ground, found = projectToWalkableGround(sample, target)
-		if not found or math.abs(ground.Y - previous.Y) > Config.ExploreMaxVerticalStep then
-			return false
-		end
-		previous = ground
-	end
-	return hasGroundSupport(goal, target)
+	return MovementController:directRouteClear(goal, target)
 end
 
 local function navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vector3
@@ -1533,36 +1502,16 @@ local function restoreMovementSpeed()
 	-- No WalkSpeed snapshot is owned by AutoFarm.
 end
 
-commandMovement = function(direction: Vector3, _owner: string?)
-	if not Root or not Humanoid then
-		return
-	end
-	local flat = Vector3.new(direction.X, 0, direction.Z)
-	if flat.Magnitude <= 0.001 then
-		releaseMovement()
-		return
-	end
-	if Config.SpeedEnabled then
-		local velocity = Root.AssemblyLinearVelocity
-		Root.AssemblyLinearVelocity = Vector3.new(flat.Unit.X * Config.MoveSpeed, velocity.Y, flat.Unit.Z * Config.MoveSpeed)
-		RuntimeState.VelocityOwned = true
-	else
-        Humanoid:Move(flat.Unit, false)
-	end
+commandMovement = function(direction: Vector3, owner: string?)
+	MovementController:commandMovement(direction, owner)
 end
 
 releaseMovement = function()
-	if Root and RuntimeState.VelocityOwned then
-		local velocity = Root.AssemblyLinearVelocity
-		Root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
-		RuntimeState.VelocityOwned = false
-	elseif Humanoid and not Config.SpeedEnabled then
-        Humanoid:Move(Vector3.zero, false)
-	end
+	MovementController:releaseMovement()
 end
 
 stopTranslation = function()
-	releaseMovement()
+	MovementController:stopTranslation()
 end
 local function disposePath()
 	disconnect(RuntimeState.PathBlockedConnection)
