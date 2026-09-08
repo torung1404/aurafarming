@@ -81,7 +81,6 @@ function Store.load(httpService, environment)
     end
 
     config.AutoStart = true
-    config.AutoStart = true
     config.CombatDistance = nil
     config.RetreatDistance = nil
     config.StuckDistance = nil
