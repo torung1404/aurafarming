@@ -1,0 +1,6 @@
+AutoFarmV21Config.json
+*.local.json
+runtime-config.json
+secrets.lua
+.env
+.env.*
