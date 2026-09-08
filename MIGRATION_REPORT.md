@@ -18,10 +18,10 @@ until each subsystem is mechanically moved and validated.
 
 - `Config.lua`
 - `Systems/ConfigStore.lua`
+- `Runtime.lua`
 
 ## Remaining monolith sections
 
-- Runtime mutable state
 - SkillFX tracking
 - Dodge decisions
 - Replay FSM
@@ -43,14 +43,20 @@ until each subsystem is mechanically moved and validated.
 - Dependency direction: `Main.lua -> Systems/ConfigStore.lua -> Config.lua`.
 - Circular imports found: none in current module graph.
 - Local balance audit over Lua brackets passed for current `.lua` files.
+- Runtime state initializer moved out of `Main.lua`; no duplicate
+  `RuntimeState = { ... }` owner remains in Main.
+- Current dependency direction:
+  `Main.lua -> Runtime.lua`,
+  `Main.lua -> Systems/ConfigStore.lua -> Config.lua`.
 - Static Luau CLI validation could not run because no `luau` binary is
   available in this environment.
 - Runtime behavior is UNTESTED in Delta.
 
 ## Known risks
 
-- `Main.lua` still contains most legacy gameplay implementation; controller and
-  system extraction checkpoints are not complete yet.
+- `Main.lua` still contains most legacy gameplay implementation outside shared
+  runtime state; controller and system extraction checkpoints are not complete
+  yet.
 - `require(script.Parent...)` assumes Roblox ModuleScript execution and must be
   validated in the target project layout before Delta loader integration.
 - Runtime behavior has not been confirmed in Delta.
