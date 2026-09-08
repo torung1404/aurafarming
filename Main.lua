@@ -99,20 +99,8 @@ local Target: Model? = nil
 local Running = Config.FarmEnabled == true
 local Enabled = true
 
-local State = NavigationState.IDLE
-local NavigationGoal: Vector3? = nil
-local GoalTarget: Model? = nil
-local LastDirectDecisionAt = 0
-
 local RespawnInProgress = false
 local ResetExecuting = false
-
-local ProgressTarget: Model? = nil
-local ProgressGoalAnchor: Vector3? = nil
-local BestGoalMetric = math.huge
-local BestVerticalDifference = math.huge
-local LastMeaningfulProgressAt = os.clock()
-local LastProgressCheckAt = 0
 
 local Combat = {
 	LastAttack = 0,
@@ -211,7 +199,7 @@ RuntimeState.sendStatusWebhook = function(event: string)
 					{ name = "Player", value = tostring(Player.DisplayName), inline = true },
 					{ name = "Event", value = tostring(event), inline = true },
 					{ name = "Target", value = Target and Target.Name or "None", inline = true },
-					{ name = "State", value = tostring(State), inline = true },
+					{ name = "State", value = tostring(MovementController.State), inline = true },
 					{ name = "Distance", value = distance and string.format("%.1f", distance) or "--", inline = true },
 					{ name = "FPS", value = string.format("%.0f", RuntimeState.SmoothedFPS), inline = true },
 					{ name = "Ping", value = string.format("%.0f ms", RuntimeState.PingMs), inline = true },
@@ -377,6 +365,7 @@ MovementController = MovementControllerModule.new({
 	Config = Config,
 	RuntimeState = RuntimeState,
 	PathfindingService = PathfindingService,
+	NavigationState = NavigationState,
 	getCharacter = function() return Character end,
 	getHumanoid = function() return Humanoid end,
 	getRoot = function() return Root end,
@@ -384,15 +373,11 @@ MovementController = MovementControllerModule.new({
 	getEnabled = function() return Enabled end,
 	getRunning = function() return Running end,
 	alive = function() return alive() end,
-	getState = function() return State end,
+	getState = function() return MovementController.State end,
 	setNavigationState = function(nextState) setNavigationState(nextState) end,
-	getNavigationGoal = function() return NavigationGoal end,
-	setBestGoalMetric = function(value)
-		LastMeaningfulProgressAt = os.clock()
-		BestGoalMetric = value
-	end,
-	getLastMeaningfulProgressAt = function() return LastMeaningfulProgressAt end,
+	getNavigationGoal = function() return MovementController.NavigationGoal end,
 	getTargetRoot = getTargetRoot,
+	getActiveHazard = function() return DodgeController:getActiveHazard() end,
 	validTarget = validTarget,
 	recoverByRespawn = function(...) return recoverByRespawn(...) end,
 	isRespawnInProgress = function() return RespawnInProgress end,
@@ -510,18 +495,16 @@ DodgeController = DodgeControllerModule.new({
 	getRoot = function() return Root end,
 	getHumanoid = function() return Humanoid end,
 	getTarget = function() return Target end,
-	getState = function() return State end,
+	getState = function() return MovementController.State end,
 	setNavigationState = function(nextState) setNavigationState(nextState) end,
-	getNavigationGoal = function() return NavigationGoal end,
+	getNavigationGoal = function() return MovementController.NavigationGoal end,
 	getPathWaypoints = function() return MovementController.PathWaypoints end,
 	getPathIndex = function() return MovementController.PathIndex end,
 	getRecoveryGoal = function() return MovementController.RecoveryGoal end,
 	getExploreGoal = function() return MovementController.ExploreGoal end,
-	setBestGoalMetric = function(value) BestGoalMetric = value end,
+	setBestGoalMetric = function(value) MovementController:setBestGoalMetric(value) end,
 	addProgressPause = function(pausedFor)
-		LastMeaningfulProgressAt += pausedFor
-		MovementController.LastExploreMeaningfulProgressAt += pausedFor
-		LastDirectDecisionAt = 0
+		MovementController:addProgressPause(pausedFor)
 	end,
 	alive = function() return Running and alive() end,
 	validTarget = validTarget,
@@ -585,10 +568,6 @@ RuntimeState.extendDescentGoal = function(now: number): boolean
 	return MovementController:extendDescentGoal(now)
 end
 
-local function updateExploreMovement()
-	MovementController:updateExploreMovement()
-end
-
 local function directRouteClear(goal: Vector3, target: Model?): boolean
 	return MovementController:directRouteClear(goal, target)
 end
@@ -598,7 +577,7 @@ local function navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vect
 end
 
 local function upcomingMovementGoal(): Vector3?
-	return MovementController:upcomingMovementGoal(State, NavigationGoal, MovementController.PathWaypoints, MovementController.PathIndex, MovementController.RecoveryGoal, MovementController.ExploreGoal)
+	return MovementController:upcomingMovementGoal(MovementController.State, MovementController.NavigationGoal, MovementController.PathWaypoints, MovementController.PathIndex, MovementController.RecoveryGoal, MovementController.ExploreGoal)
 end
 
 local function acquireBestTarget(): Model?
@@ -607,57 +586,6 @@ end
 
 local function targetMetrics(target: Model?): (number, number)
 	return TargetingController:targetMetrics(target)
-end
-
-local function updateGlobalStuckJump()
-	if not Running or not alive() or not Root or not Humanoid then
-		RuntimeState.JumpStillSince = os.clock()
-		RuntimeState.JumpBestDistance = math.huge
-		RuntimeState.JumpBestVertical = math.huge
-		return
-	end
-	local now = os.clock()
-	local translating = State == NavigationState.DIRECT
-		or State == NavigationState.STEER
-		or State == NavigationState.RETREAT
-		or State == NavigationState.PATH
-		or State == NavigationState.RECOVERY
-		or State == NavigationState.EXPLORE
-	if not translating then
-		RuntimeState.JumpStillSince = now
-		RuntimeState.JumpBestDistance = math.huge
-		RuntimeState.JumpBestVertical = math.huge
-		return
-	end
-	local targetRoot = if validTarget(Target) then getTargetRoot(Target) else nil
-	local followingVerticalPath = State == NavigationState.PATH and RuntimeState.VerticalPathTarget == Target
-	local objectivePosition = if followingVerticalPath
-		then upcomingMovementGoal()
-		else if targetRoot then targetRoot.Position else upcomingMovementGoal()
-	if not objectivePosition then
-		RuntimeState.JumpStillSince = now
-		RuntimeState.JumpBestDistance = math.huge
-		RuntimeState.JumpBestVertical = math.huge
-		return
-	end
-	local delta = objectivePosition - Root.Position
-	local distance, vertical = delta.Magnitude, math.abs(delta.Y)
-	if RuntimeState.JumpBestDistance == math.huge then
-		RuntimeState.JumpBestDistance = distance
-		RuntimeState.JumpBestVertical = vertical
-		RuntimeState.JumpStillSince = now
-		return
-	end
-	local progressThreshold = Config.MeaningfulProgressDistance
-	local progressed = distance <= RuntimeState.JumpBestDistance - progressThreshold
-		or vertical <= RuntimeState.JumpBestVertical - progressThreshold
-	if progressed then
-		RuntimeState.JumpBestDistance = math.min(RuntimeState.JumpBestDistance, distance)
-		RuntimeState.JumpBestVertical = math.min(RuntimeState.JumpBestVertical, vertical)
-		RuntimeState.JumpStillSince = now
-	elseif now - RuntimeState.JumpStillSince >= 20 and not RespawnInProgress then
-		recoverByRespawn(nil, nil, false, RuntimeState.JumpStillSince)
-	end
 end
 
 local function guiRoots(): { Instance }
@@ -1212,7 +1140,7 @@ end
 
 local function useNormalAttack(distance3D: number)
 	if
-		State == NavigationState.DODGE
+		MovementController.State == NavigationState.DODGE
 		or not validTarget(Target)
 		or distance3D > Config.AttackRange
 		or os.clock() - Combat.LastAttack < Config.AttackCooldown
@@ -1341,71 +1269,23 @@ cancelPathRequest = function()
 end
 
 setNavigationState = function(newState: string)
-	if State == newState then
-		return
-	end
-	telemetry("STATE", State .. " -> " .. newState)
-	State = newState
-	local activity = ({
-		IDLE = "IDLE", DIRECT = "MOVING TO ENEMY", PATH = "PATHING TO ENEMY",
-		COMBAT = "ATTACKING", RECOVERY = "RECOVERING", STEER = "MOVING TO ENEMY",
-		RETREAT = "RETREATING", EXPLORE = "EXPLORING", DODGE = "DODGING",
-	})[newState] or newState
-	RuntimeState.Activity = activity
-	local activeHazard = DodgeController:getActiveHazard()
-	RuntimeState.ActivityDetail = activeHazard and activeHazard:GetFullName() or ""
+	MovementController:setNavigationState(newState)
 end
 
 local function resetProgress(target: Model?, goal: Vector3?)
-	ProgressTarget = target
-	ProgressGoalAnchor = goal
-	BestGoalMetric = math.huge
-	BestVerticalDifference = math.huge
-	LastMeaningfulProgressAt = os.clock()
-	LastProgressCheckAt = 0
-	MovementController.RecoveryGoal = nil
-	MovementController.RecoveryUntil = 0
-	MovementController.SteeringTried = false
+	MovementController:resetProgress(target, goal)
 end
 
 pathRemainingMetric = function(): number
-	return MovementController:pathRemainingMetric(NavigationGoal)
+	return MovementController:pathRemainingMetric(MovementController.NavigationGoal)
 end
 
 local function markMeaningfulProgress()
-	LastMeaningfulProgressAt = os.clock()
-	BestGoalMetric = pathRemainingMetric()
+	MovementController:markMeaningfulProgress()
 end
 
 local function updateProgressTracking()
-	if not Root or not Target or not NavigationGoal then
-		return
-	end
-	local now = os.clock()
-	if ProgressTarget ~= Target or not ProgressGoalAnchor then
-		resetProgress(Target, NavigationGoal)
-		return
-	end
-	if now - LastProgressCheckAt < Config.ProgressCheckInterval then
-		return
-	end
-	LastProgressCheckAt = now
-	local metric = pathRemainingMetric()
-	local enemyRoot = getTargetRoot(Target)
-	local vertical = enemyRoot and math.abs(enemyRoot.Position.Y - Root.Position.Y) or math.huge
-	local verticalProgress = BestVerticalDifference < math.huge
-		and vertical <= BestVerticalDifference - Config.MeaningfulProgressDistance
-	if BestVerticalDifference == math.huge then
-		BestVerticalDifference = vertical
-	elseif verticalProgress then
-		BestVerticalDifference = vertical
-	end
-	if BestGoalMetric == math.huge then
-		BestGoalMetric = metric
-	elseif metric <= BestGoalMetric - Config.MeaningfulProgressDistance or verticalProgress then
-		BestGoalMetric = metric
-		LastMeaningfulProgressAt = now
-	end
+	MovementController:updateProgressTracking()
 end
 
 local function rayClearance(origin: Vector3, direction: Vector3, target: Model?): number
@@ -1428,76 +1308,8 @@ local function requestPath(goal: Vector3): boolean
 	return MovementController:requestPath(goal)
 end
 
-local function updatePathNavigation()
-	MovementController:updatePathNavigation()
-end
-
-local function updateDirectMovement()
-	if State ~= NavigationState.DIRECT or not Humanoid or not Root or not NavigationGoal then
-		return
-	end
-	local direction = Vector3.new(NavigationGoal.X - Root.Position.X, 0, NavigationGoal.Z - Root.Position.Z)
-	if direction.Magnitude <= Config.DirectReachedDistance then
-		commandMovement(Vector3.zero, false)
-	else
-		commandMovement(direction.Unit, false)
-	end
-end
-
-local function updateRecoveryMovement()
-	MovementController:updateRecoveryMovement()
-end
-
 local function runRecoveryPolicy()
 	MovementController:runRecoveryPolicy()
-end
-
-local function decideNavigation()
-	if not alive() or not Target or not NavigationGoal then
-		return
-	end
-	local now = os.clock()
-	if State == NavigationState.PATH then
-		if MovementController.PathGoal and (NavigationGoal - MovementController.PathGoal).Magnitude >= Config.PathGoalChangeDistance then
-			MovementController.PathNeedsRebuild = true
-		end
-		return
-	end
-	if
-		(State == NavigationState.RECOVERY or State == NavigationState.STEER) and (MovementController.PathComputing or now < MovementController.RecoveryUntil)
-	then
-		return
-	end
-	if now - LastDirectDecisionAt < Config.DirectDecisionInterval then
-		return
-	end
-	LastDirectDecisionAt = now
-	local progressing = now - LastMeaningfulProgressAt < Config.RecoveryRefreshAt
-	-- A moving target route may briefly fail a local probe at an edge. Keep DIRECT
-	-- while target progress proves that the current command is still productive.
-	if State == NavigationState.DIRECT and progressing then
-		return
-	end
-	local delta = NavigationGoal - Root.Position
-	local localGoal = Root.Position
-		+ (delta.Magnitude > 0.01 and delta.Unit or Vector3.zero)
-			* math.min(delta.Magnitude, Config.DetourProbeDistance)
-	local grounded = projectToWalkableGround(localGoal, Target)
-	local safeDirect = directRouteClear(grounded, Target) and pointIsSafeFromHazards(grounded)
-	if safeDirect and (State ~= NavigationState.DIRECT or progressing) then
-		disposePath()
-		MovementController.RecoveryGoal = nil
-		setNavigationState(NavigationState.DIRECT)
-	else
-		if not MovementController.SteeringTried then
-			MovementController.SteeringTried = true
-			beginLocalRecovery(NavigationGoal)
-			setNavigationState(NavigationState.STEER)
-		else
-			beginLocalRecovery(NavigationGoal)
-			requestPath(NavigationGoal)
-		end
-	end
 end
 
 local function resetNavigationForTarget(newTarget: Model?)
@@ -1526,10 +1338,10 @@ local function resetNavigationForTarget(newTarget: Model?)
 			end
 		end
 	end
-	GoalTarget = nil
-	NavigationGoal = nil
+	MovementController.GoalTarget = nil
+	MovementController.NavigationGoal = nil
 	RuntimeState.LastGoalRefreshAt = 0
-	LastDirectDecisionAt = 0
+	MovementController.LastDirectDecisionAt = 0
 	MovementController.RecoveryGoal = nil
 	MovementController.RecoveryUntil = 0
 	cancelPathRequest()
@@ -1684,7 +1496,7 @@ local function updateTargetAndObjective()
 	if not Target or not Root or not Humanoid then
 		MovementController.NoTargetSince = MovementController.NoTargetSince or now
 		cancelPathRequest()
-		NavigationGoal = nil
+		MovementController.NavigationGoal = nil
 		MovementController.RecoveryGoal = nil
 		if RuntimeState.ActiveDungeonRoot and now - MovementController.NoTargetSince >= Config.ExploreStartDelay then
 			if not MovementController.ExploreGoal or now >= MovementController.ExploreCommitUntil then
@@ -1733,7 +1545,7 @@ local function updateTargetAndObjective()
 		end)
 	end
 	MovementController.NoTargetSince = nil
-	if now - TargetingController.LastTargetAcquireAt >= Config.TargetAcquireInterval and State ~= NavigationState.DODGE then
+	if now - TargetingController.LastTargetAcquireAt >= Config.TargetAcquireInterval and MovementController.State ~= NavigationState.DODGE then
 		TargetingController.LastTargetAcquireAt = now
 		local candidate = acquireBestTarget()
 		local _, currentDistance = targetMetrics(Target)
@@ -1747,7 +1559,7 @@ local function updateTargetAndObjective()
 	if now < RuntimeState.RespawnGraceUntil then
 		if distance3D <= Config.PreferredCombatDistance then
 			cancelPathRequest()
-			NavigationGoal = nil
+			MovementController.NavigationGoal = nil
 			MovementController.RecoveryGoal = nil
 			setNavigationState(NavigationState.COMBAT)
 			resetProgress(Target, nil)
@@ -1756,33 +1568,33 @@ local function updateTargetAndObjective()
 		cancelPathRequest()
 		MovementController.RecoveryGoal = nil
 		MovementController.SteeringTried = false
-		GoalTarget = Target
-		NavigationGoal = navigationGoalForTarget(enemyRoot, Target)
+		MovementController.GoalTarget = Target
+		MovementController.NavigationGoal = navigationGoalForTarget(enemyRoot, Target)
 		setNavigationState(NavigationState.DIRECT)
 		return
 	end
-	if State == NavigationState.RETREAT and distance3D < Config.RetreatExitDistance then
+	if MovementController.State == NavigationState.RETREAT and distance3D < Config.RetreatExitDistance then
 		cancelPathRequest()
-		NavigationGoal = nil
+		MovementController.NavigationGoal = nil
 		return
 	elseif distance3D < Config.RetreatEnterDistance then
 		cancelPathRequest()
-		NavigationGoal = nil
+		MovementController.NavigationGoal = nil
 		setNavigationState(NavigationState.RETREAT)
 		return
 	end
 	if distance3D <= Config.PreferredCombatDistance then
 		-- Invalidate an in-flight ComputeAsync as well as any published path. Merely
 		-- disposing ActivePath would still allow the old callback to publish PATH.
-		if State ~= NavigationState.COMBAT or MovementController.PathComputing or MovementController.ActivePath then
+		if MovementController.State ~= NavigationState.COMBAT or MovementController.PathComputing or MovementController.ActivePath then
 			cancelPathRequest()
 		end
-		NavigationGoal = nil
+		MovementController.NavigationGoal = nil
 		setNavigationState(NavigationState.COMBAT)
 		resetProgress(Target, nil)
 		return
 	end
-	if State == NavigationState.COMBAT then
+	if MovementController.State == NavigationState.COMBAT then
 		setNavigationState(NavigationState.IDLE)
 	end
 	local flatDistance =
@@ -1794,15 +1606,15 @@ local function updateTargetAndObjective()
 			RuntimeState.VerticalPathTarget = Target
 			RuntimeState.VerticalPathGoal = navigationGoalForTarget(enemyRoot, Target)
 		end
-		GoalTarget = Target
-		NavigationGoal = RuntimeState.VerticalPathGoal
-		if ProgressTarget ~= Target or ProgressGoalAnchor ~= NavigationGoal then
-			resetProgress(Target, NavigationGoal)
+		MovementController.GoalTarget = Target
+		MovementController.NavigationGoal = RuntimeState.VerticalPathGoal
+		if MovementController.ProgressTarget ~= Target or MovementController.ProgressGoalAnchor ~= MovementController.NavigationGoal then
+			resetProgress(Target, MovementController.NavigationGoal)
 		end
-		if not MovementController.PathComputing and (State ~= NavigationState.PATH or not MovementController.PathWaypoints) then
+		if not MovementController.PathComputing and (MovementController.State ~= NavigationState.PATH or not MovementController.PathWaypoints) then
 			cancelPathRequest()
 			setNavigationState(NavigationState.PATH)
-			requestPath(NavigationGoal)
+			requestPath(MovementController.NavigationGoal)
 		end
 		updateProgressTracking()
 		runRecoveryPolicy()
@@ -1810,20 +1622,20 @@ local function updateTargetAndObjective()
 	end
 	RuntimeState.VerticalPathTarget = nil
 	RuntimeState.VerticalPathGoal = nil
-	if GoalTarget ~= Target or now - RuntimeState.LastGoalRefreshAt >= Config.GoalRefreshInterval then
+	if MovementController.GoalTarget ~= Target or now - RuntimeState.LastGoalRefreshAt >= Config.GoalRefreshInterval then
 		RuntimeState.LastGoalRefreshAt = now
-		GoalTarget = Target
+		MovementController.GoalTarget = Target
 		local newGoal = navigationGoalForTarget(enemyRoot, Target)
-		if not NavigationGoal or (newGoal - NavigationGoal).Magnitude >= Config.DirectGoalChangeDistance then
-			NavigationGoal = newGoal
-		elseif State == NavigationState.DIRECT then
-			NavigationGoal = NavigationGoal:Lerp(newGoal, 0.35)
+		if not MovementController.NavigationGoal or (newGoal - MovementController.NavigationGoal).Magnitude >= Config.DirectGoalChangeDistance then
+			MovementController.NavigationGoal = newGoal
+		elseif MovementController.State == NavigationState.DIRECT then
+			MovementController.NavigationGoal = MovementController.NavigationGoal:Lerp(newGoal, 0.35)
 		end
 	end
-	if not ProgressGoalAnchor then
-		resetProgress(Target, NavigationGoal)
+	if not MovementController.ProgressGoalAnchor then
+		resetProgress(Target, MovementController.NavigationGoal)
 	end
-	decideNavigation()
+	MovementController:decideNavigation()
 	updateProgressTracking()
 	runRecoveryPolicy()
 end
@@ -2076,14 +1888,14 @@ updateObsidianStatus = function()
 	local values = {
 		Round = "Round: " .. tostring(RuntimeState.RoundPhase),
 		Activity = "Activity: " .. tostring(RuntimeState.Activity),
-		State = "State: " .. tostring(State),
+		State = "State: " .. tostring(MovementController.State),
 		Target = "Target: " .. (Target and Target.Name or "None"),
 		Distance = "Distance: " .. (distance and string.format("%.1f", distance) or "--"),
 		Timer = "Dungeon Timer: " .. timerText,
 		Replay = "Replay: " .. tostring(RuntimeState.ReplayPhase),
 		FPS = "FPS: " .. string.format("%.0f", RuntimeState.SmoothedFPS),
 		Ping = "Ping: " .. string.format("%.0f ms", RuntimeState.PingMs),
-		Dodge = "Dodge: " .. (Config.DodgeEnabled and (State == NavigationState.DODGE and "ACTIVE" or "READY") or "OFF"),
+		Dodge = "Dodge: " .. (Config.DodgeEnabled and (MovementController.State == NavigationState.DODGE and "ACTIVE" or "READY") or "OFF"),
 		Grace = graceRemaining > 0 and string.format("Respawn Grace: %.1fs", graceRemaining) or "Respawn Grace: OFF",
 		Hazard = "Current Hazard: " .. hazardText,
 	}
@@ -2262,7 +2074,7 @@ table.insert(
 			return
 		end
 		applyMovementSpeed()
-		updateGlobalStuckJump()
+		MovementController:updateGlobalStuckJump()
 		if now - RuntimeState.LastTargetDecisionAt >= Config.TargetDecisionInterval then
 			RuntimeState.LastTargetDecisionAt = now
 			local targetDecisionStartedAt = os.clock()
@@ -2287,19 +2099,19 @@ table.insert(
 				useNormalAttack(distance)
 			end
 		end
-		if State == NavigationState.DIRECT then
-			updateDirectMovement()
-		elseif State == NavigationState.PATH then
-			updatePathNavigation()
+		if MovementController.State == NavigationState.DIRECT then
+			MovementController:updateDirectMovement()
+		elseif MovementController.State == NavigationState.PATH then
+			MovementController:updatePathNavigation()
 		elseif
-			State == NavigationState.RECOVERY
-			or State == NavigationState.STEER
-			or State == NavigationState.RETREAT
+			MovementController.State == NavigationState.RECOVERY
+			or MovementController.State == NavigationState.STEER
+			or MovementController.State == NavigationState.RETREAT
 		then
-			updateRecoveryMovement()
-		elseif State == NavigationState.EXPLORE then
-			updateExploreMovement()
-		elseif State == NavigationState.COMBAT or State == NavigationState.IDLE then
+			MovementController:updateRecoveryMovement()
+		elseif MovementController.State == NavigationState.EXPLORE then
+			MovementController:updateExploreMovement()
+		elseif MovementController.State == NavigationState.COMBAT or MovementController.State == NavigationState.IDLE then
 			stopTranslation()
 		end
 		logPerf("heartbeat", heartbeatStartedAt)
