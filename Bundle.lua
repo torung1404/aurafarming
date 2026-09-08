@@ -1,6 +1,4 @@
 -- Auto-generated single-file bundle for Delta
--- Source remains modular in the repository; this file is the runtime release.
-
 local SOURCES = {
 	["Config.lua"] = [=[
 -- Safe defaults only. User/runtime overrides are loaded by Systems.ConfigStore.
@@ -4424,7 +4422,7 @@ local function updateDodgeController(): boolean
 	return DodgeController:update()
 end
 
-local function LifecycleController:update()
+local function updateDungeonReplayState()
 	local now = os.clock()
 	if now - RuntimeState.LastDungeonStateCheckAt < 0.25 then
 		return
@@ -6017,19 +6015,15 @@ local Nodes = {}
 local function addPath(path)
 	local current = Root
 	local parts = string.split(path, "/")
-
 	for index, part in ipairs(parts) do
 		local name = part:gsub("%.lua$", "")
 		local child = current._children[name]
-
 		if not child then
 			child = newNode(name, index == #parts and path or nil, current)
 			current._children[name] = child
 		end
-
 		current = child
 	end
-
 	Nodes[path] = current
 end
 
@@ -6044,11 +6038,9 @@ local moduleRequire
 local function runNode(node)
 	local path = node and node._path
 	assert(path and SOURCES[path], "invalid bundled module")
-
 	if Cache[path] ~= nil then
 		return Cache[path]
 	end
-
 	assert(not Loading[path], "circular require: " .. path)
 	Loading[path] = true
 
@@ -6063,13 +6055,11 @@ local function runNode(node)
 	}, {
 		__index = getfenv(),
 	})
-
 	setfenv(chunk, environment)
 
 	local ok, result = xpcall(chunk, debug.traceback)
 	Loading[path] = nil
 	assert(ok, result)
-
 	Cache[path] = result
 	return result
 end

@@ -2077,7 +2077,7 @@ local function updateDodgeController(): boolean
 	return DodgeController:update()
 end
 
-local function LifecycleController:update()
+local function updateDungeonReplayState()
 	local now = os.clock()
 	if now - RuntimeState.LastDungeonStateCheckAt < 0.25 then
 		return
