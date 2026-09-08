@@ -22,10 +22,10 @@ until each subsystem is mechanically moved and validated.
 - `Systems/SkillFX.lua`
 - `Controllers/Dodge.lua`
 - `Controllers/Replay.lua`
+- `Controllers/Targeting.lua`
 
 ## Remaining monolith sections
 
-- Targeting/enemy cache
 - Movement/navigation
 - Combat input
 - Dungeon/timer/lifecycle resolution
@@ -63,6 +63,9 @@ until each subsystem is mechanically moved and validated.
 - Replay state owner check: Replay FSM state remains in `Runtime.lua` and is
   mutated only through `Controllers/Replay.lua` wrappers plus remaining
   lifecycle reset code.
+- Targeting enemy cache, valid-target filtering, registration, nearest target
+  acquisition, target metrics, target decision timing, and skill-range enemy
+  lookup moved into `Controllers/Targeting.lua`.
 - Fixed invalid `Combat` table constructor in `Main.lua`; table keys are now
   direct fields instead of `Combat.Field = value`.
 - Removed duplicate `config.AutoStart = true` from `Systems/ConfigStore.lua`.
@@ -72,6 +75,7 @@ until each subsystem is mechanically moved and validated.
   `Main.lua -> Runtime.lua`,
   `Main.lua -> Controllers/Dodge.lua`,
   `Main.lua -> Controllers/Replay.lua`,
+  `Main.lua -> Controllers/Targeting.lua`,
   `Main.lua -> Systems/SkillFX.lua`,
   `Main.lua -> Systems/ConfigStore.lua -> Config.lua`.
 - Static Luau CLI validation could not run because no `luau` binary is
