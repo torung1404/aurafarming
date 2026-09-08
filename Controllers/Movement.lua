@@ -5,11 +5,32 @@ function Movement.new(context)
 	local self = setmetatable({}, Movement)
 	self.Config = context.Config
 	self.RuntimeState = context.RuntimeState
+	self.PathfindingService = context.PathfindingService
 	self.getCharacter = context.getCharacter
 	self.getHumanoid = context.getHumanoid
 	self.getRoot = context.getRoot
 	self.getTarget = context.getTarget
+	self.getEnabled = context.getEnabled
+	self.getRunning = context.getRunning
+	self.alive = context.alive
+	self.getState = context.getState
+	self.setNavigationState = context.setNavigationState
+	self.getNavigationGoal = context.getNavigationGoal
+	self.beginLocalRecovery = context.beginLocalRecovery
+	self.setBestGoalMetric = context.setBestGoalMetric
 	self.pointIsSafeFromHazards = context.pointIsSafeFromHazards
+	self.ActivePath = nil :: Path?
+	self.PathWaypoints = nil :: { PathWaypoint }?
+	self.PathIndex = 2
+	self.PathGoal = nil :: Vector3?
+	self.PathComputing = false
+	self.PathRequestSerial = 0
+	self.LastPathBuildAt = -math.huge
+	self.PathNeedsRebuild = false
+	self.PathIssuedIndex = 0
+	self.PathIssuedAt = 0
+	self.PathBestWaypointDistance = math.huge
+	self.ActiveWaypointIssueSerial = 0
 	return self
 end
 
@@ -192,6 +213,197 @@ function Movement:chooseRecoveryDetour(goal: Vector3, retreat: boolean?, dodgeRo
 		end
 	end
 	return bestGoal
+end
+
+function Movement:disposePath()
+	if self.RuntimeState.PathBlockedConnection then
+		self.RuntimeState.PathBlockedConnection:Disconnect()
+		self.RuntimeState.PathBlockedConnection = nil
+	end
+	if self.ActivePath then
+		self.ActivePath:Destroy()
+	end
+	self.ActivePath = nil
+	self.PathWaypoints = nil
+	self.PathIndex = 2
+	self.PathGoal = nil
+	self.PathNeedsRebuild = false
+	self.PathIssuedIndex = 0
+	self.PathIssuedAt = 0
+	self.PathBestWaypointDistance = math.huge
+	self.RuntimeState.ActivePathGeneration = 0
+	self.ActiveWaypointIssueSerial = 0
+end
+
+function Movement:cancelPathRequest()
+	self.PathRequestSerial += 1
+	self.PathComputing = false
+	self:disposePath()
+end
+
+function Movement:pathRemainingMetric(navigationGoal: Vector3?): number
+	local root = self.getRoot()
+	if not root or not navigationGoal then
+		return math.huge
+	end
+	if self.getState() ~= "PATH" or not self.PathWaypoints or not self.PathWaypoints[self.PathIndex] then
+		return (navigationGoal - root.Position).Magnitude
+	end
+	local metric = (self.PathWaypoints[self.PathIndex].Position - root.Position).Magnitude
+	for index = self.PathIndex, #self.PathWaypoints - 1 do
+		metric += (self.PathWaypoints[index + 1].Position - self.PathWaypoints[index].Position).Magnitude
+	end
+	metric += (navigationGoal - self.PathWaypoints[#self.PathWaypoints].Position).Magnitude
+	return metric
+end
+
+function Movement:issueCurrentWaypoint()
+	local humanoid = self.getHumanoid()
+	local root = self.getRoot()
+	if self.getState() ~= "PATH" or not humanoid or not root or not self.PathWaypoints then
+		return
+	end
+	local waypoint = self.PathWaypoints[self.PathIndex]
+	if not waypoint then
+		self:disposePath()
+		self.setNavigationState("IDLE")
+		return
+	end
+	if self.PathIssuedIndex == self.PathIndex then
+		return
+	end
+	self.PathIssuedIndex = self.PathIndex
+	self.PathIssuedAt = os.clock()
+	self.PathBestWaypointDistance = (waypoint.Position - root.Position).Magnitude
+	self.RuntimeState.WaypointIssueSerial += 1
+	self.ActiveWaypointIssueSerial = self.RuntimeState.WaypointIssueSerial
+	if waypoint.Action == Enum.PathWaypointAction.Jump then
+		humanoid.Jump = true
+	end
+	self:commandMovement(Vector3.new(waypoint.Position.X - root.Position.X, 0, waypoint.Position.Z - root.Position.Z), "PATH")
+end
+
+function Movement:requestPath(goal: Vector3): boolean
+	local root = self.getRoot()
+	local target = self.getTarget()
+	if not self.alive() or not target or self.PathComputing or not root then
+		return false
+	end
+	local now = os.clock()
+	if now - self.LastPathBuildAt < self.Config.PathRebuildCooldown then
+		return false
+	end
+	self.PathRequestSerial += 1
+	local requestId = self.PathRequestSerial
+	local expectedTarget = target
+	local expectedCharacter = self.getCharacter()
+	local origin = root.Position
+	self.PathComputing = true
+	self.LastPathBuildAt = now
+	self:disposePath()
+	task.spawn(function()
+		local newPath = self.PathfindingService:CreatePath({
+			AgentRadius = self.Config.AgentRadius,
+			AgentHeight = self.Config.AgentHeight,
+			AgentCanJump = true,
+			AgentCanClimb = true,
+			WaypointSpacing = self.Config.WaypointSpacing,
+		})
+		local ok = pcall(function()
+			newPath:ComputeAsync(origin, goal)
+		end)
+		if requestId ~= self.PathRequestSerial then
+			newPath:Destroy()
+			return
+		end
+		self.PathComputing = false
+		if
+			not self.getEnabled()
+			or not self.getRunning()
+			or not self.alive()
+			or self.getTarget() ~= expectedTarget
+			or self.getCharacter() ~= expectedCharacter
+		then
+			newPath:Destroy()
+			return
+		end
+		local waypoints = ok and newPath.Status == Enum.PathStatus.Success and newPath:GetWaypoints() or nil
+		if not waypoints or #waypoints < 2 then
+			newPath:Destroy()
+			self.beginLocalRecovery(nil, 0)
+			self.setNavigationState("RECOVERY")
+			return
+		end
+		self.ActivePath = newPath
+		self.RuntimeState.ActivePathGeneration = requestId
+		self.PathWaypoints = waypoints
+		self.PathIndex = 2
+		self.PathGoal = goal
+		self.PathIssuedIndex = 0
+		self.PathNeedsRebuild = false
+		self.ActiveWaypointIssueSerial = 0
+		self.RuntimeState.PathBlockedConnection = newPath.Blocked:Connect(function(blockedIndex)
+			if
+				self.RuntimeState.ActivePathGeneration == requestId
+				and requestId == self.PathRequestSerial
+				and blockedIndex >= self.PathIndex
+			then
+				self.PathNeedsRebuild = true
+			end
+		end)
+		self.setNavigationState("PATH")
+		self.setBestGoalMetric(self:pathRemainingMetric(self.getNavigationGoal()))
+		-- The async compute callback publishes state only. The next Heartbeat issues MoveTo.
+	end)
+	return true
+end
+
+function Movement:updatePathNavigation()
+	local root = self.getRoot()
+	local navigationGoal = self.getNavigationGoal()
+	if self.getState() ~= "PATH" or not root or not self.PathWaypoints then
+		return
+	end
+	if self.PathNeedsRebuild then
+		self.beginLocalRecovery(navigationGoal or root.Position)
+		self:requestPath(navigationGoal or root.Position)
+		return
+	end
+	local waypoint = self.PathWaypoints[self.PathIndex]
+	if not waypoint then
+		self:disposePath()
+		self.setNavigationState("IDLE")
+		return
+	end
+	-- A published path is not monitorable until its current waypoint has been issued.
+	-- Returning here guarantees timeout/progress logic never observes PathIssuedAt == 0.
+	if self.PathIssuedIndex ~= self.PathIndex or self.PathIssuedAt <= 0 or self.ActiveWaypointIssueSerial <= 0 then
+		self:issueCurrentWaypoint()
+		return
+	end
+	local waypointDistance = (waypoint.Position - root.Position).Magnitude
+	-- MoveToFinished carries no path/waypoint identity. Position is the sole safe
+	-- completion authority; a delayed event can therefore never advance this path.
+	if waypointDistance <= self.Config.WaypointReachedDistance then
+		local advanced = self.PathBestWaypointDistance - waypointDistance >= self.Config.MeaningfulProgressDistance
+		self.PathIndex += 1
+		self.PathIssuedIndex = 0
+		self.PathIssuedAt = 0
+		self.ActiveWaypointIssueSerial = 0
+		if advanced then
+			self.setBestGoalMetric(self:pathRemainingMetric(navigationGoal))
+		end
+		self:issueCurrentWaypoint()
+		return
+	end
+	if waypointDistance <= self.PathBestWaypointDistance - self.Config.MeaningfulProgressDistance then
+		self.PathBestWaypointDistance = waypointDistance
+		self.setBestGoalMetric(self:pathRemainingMetric(navigationGoal))
+	end
+	if self.PathIssuedIndex == self.PathIndex and self.PathIssuedAt > 0 and os.clock() - self.PathIssuedAt >= self.Config.WaypointTimeout then
+		self.PathNeedsRebuild = true
+		return
+	end
 end
 
 function Movement:commandMovement(direction: Vector3, _owner: string?)
