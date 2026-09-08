@@ -1,0 +1,34 @@
+DELTA AUTOFARM SOURCE OF TRUTH
+
+A. Normal RobloxLuau APIs
+- gameGetService
+- Players
+- LocalPlayer
+- Character
+- Humanoid
+- BasePart
+- Workspace
+- Camera
+- RunService
+- UserInputService
+- GUI objects
+- RemoteEvent only if actually needed
+
+B. Executor APIs actually needed
+- getgenv
+- Drawing API
+- input APIs
+- filesystemconfig if used
+- identifyexecutor
+- any Delta-specific confirmed globals
+
+C. Runtime-confirmed Delta APIs
+- test each uncertain function in Delta
+- store PASSFAIL
+
+D. Explicitly avoid for this AutoFarm
+- memory APIs
+- GC manipulation
+- hookfunctionhookmetamethod
+- decompiler dependency
+- deep executor internals
