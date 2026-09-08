@@ -13,12 +13,8 @@ function Movement.new(context)
 	self.getEnabled = context.getEnabled
 	self.getRunning = context.getRunning
 	self.alive = context.alive
-	self.getState = context.getState
-	self.setNavigationState = context.setNavigationState
-	self.getNavigationGoal = context.getNavigationGoal
-	self.setBestGoalMetric = context.setBestGoalMetric
-	self.getLastMeaningfulProgressAt = context.getLastMeaningfulProgressAt
 	self.getTargetRoot = context.getTargetRoot
+	self.getActiveHazard = context.getActiveHazard
 	self.validTarget = context.validTarget
 	self.recoverByRespawn = context.recoverByRespawn
 	self.isRespawnInProgress = context.isRespawnInProgress
@@ -52,6 +48,17 @@ function Movement.new(context)
 	self.DescentRiseStrikes = 0
 	self.ExploredCells = {} :: { [string]: boolean }
 	self.ExploredCellOrder = {} :: { string }
+	self.NavigationState = context.NavigationState
+	self.State = self.NavigationState.IDLE
+	self.NavigationGoal = nil :: Vector3?
+	self.GoalTarget = nil :: Model?
+	self.LastDirectDecisionAt = 0
+	self.ProgressTarget = nil :: Model?
+	self.ProgressGoalAnchor = nil :: Vector3?
+	self.BestGoalMetric = math.huge
+	self.BestVerticalDifference = math.huge
+	self.LastMeaningfulProgressAt = os.clock()
+	self.LastProgressCheckAt = 0
 	return self
 end
 
@@ -387,7 +394,7 @@ end
 function Movement:updateExploreMovement()
 	local root = self.getRoot()
 	local humanoid = self.getHumanoid()
-	if self.getState() ~= "EXPLORE" or not root or not humanoid or not self.ExploreGoal or self.getTarget() then
+	if self.State ~= "EXPLORE" or not root or not humanoid or not self.ExploreGoal or self.getTarget() then
 		return
 	end
 	local direction = Vector3.new(self.ExploreGoal.X - root.Position.X, 0, self.ExploreGoal.Z - root.Position.Z)
@@ -407,16 +414,70 @@ function Movement:updateExploreMovement()
 	self:commandMovement(direction.Unit, false)
 end
 
+function Movement:updateGlobalStuckJump()
+	local root = self.getRoot()
+	local humanoid = self.getHumanoid()
+	if not self.getRunning() or not self.alive() or not root or not humanoid then
+		self.RuntimeState.JumpStillSince = os.clock()
+		self.RuntimeState.JumpBestDistance = math.huge
+		self.RuntimeState.JumpBestVertical = math.huge
+		return
+	end
+	local now = os.clock()
+	local translating = self.State == "DIRECT"
+		or self.State == "STEER"
+		or self.State == "RETREAT"
+		or self.State == "PATH"
+		or self.State == "RECOVERY"
+		or self.State == "EXPLORE"
+	if not translating then
+		self.RuntimeState.JumpStillSince = now
+		self.RuntimeState.JumpBestDistance = math.huge
+		self.RuntimeState.JumpBestVertical = math.huge
+		return
+	end
+	local target = self.getTarget()
+	local targetRoot = if self.validTarget(target) then self.getTargetRoot(target) else nil
+	local followingVerticalPath = self.State == "PATH" and self.RuntimeState.VerticalPathTarget == target
+	local objectivePosition = if followingVerticalPath
+		then self:upcomingMovementGoal(self.State, self.NavigationGoal, self.PathWaypoints, self.PathIndex, self.RecoveryGoal, self.ExploreGoal)
+		else if targetRoot then targetRoot.Position else self:upcomingMovementGoal(self.State, self.NavigationGoal, self.PathWaypoints, self.PathIndex, self.RecoveryGoal, self.ExploreGoal)
+	if not objectivePosition then
+		self.RuntimeState.JumpStillSince = now
+		self.RuntimeState.JumpBestDistance = math.huge
+		self.RuntimeState.JumpBestVertical = math.huge
+		return
+	end
+	local delta = objectivePosition - root.Position
+	local distance, vertical = delta.Magnitude, math.abs(delta.Y)
+	if self.RuntimeState.JumpBestDistance == math.huge then
+		self.RuntimeState.JumpBestDistance = distance
+		self.RuntimeState.JumpBestVertical = vertical
+		self.RuntimeState.JumpStillSince = now
+		return
+	end
+	local progressThreshold = self.Config.MeaningfulProgressDistance
+	local progressed = distance <= self.RuntimeState.JumpBestDistance - progressThreshold
+		or vertical <= self.RuntimeState.JumpBestVertical - progressThreshold
+	if progressed then
+		self.RuntimeState.JumpBestDistance = math.min(self.RuntimeState.JumpBestDistance, distance)
+		self.RuntimeState.JumpBestVertical = math.min(self.RuntimeState.JumpBestVertical, vertical)
+		self.RuntimeState.JumpStillSince = now
+	elseif now - self.RuntimeState.JumpStillSince >= 20 and not self.isRespawnInProgress() then
+		self.recoverByRespawn(nil, nil, false, self.RuntimeState.JumpStillSince)
+	end
+end
+
 function Movement:beginLocalRecovery(goal: Vector3)
 	self.RecoveryGoal = self:chooseRecoveryDetour(goal, nil, self.dodgeRouteClear)
 	self.RecoveryUntil = os.clock() + self.Config.DetourDuration
-	self.setNavigationState("RECOVERY")
+	self:setNavigationState("RECOVERY")
 end
 
 function Movement:updateRecoveryMovement()
 	local root = self.getRoot()
 	local humanoid = self.getHumanoid()
-	local state = self.getState()
+	local state = self.State
 	local target = self.getTarget()
 	if
 		(state ~= "RECOVERY" and state ~= "STEER" and state ~= "RETREAT")
@@ -444,7 +505,7 @@ function Movement:updateRecoveryMovement()
 			return
 		end
 	end
-	if state == "STEER" and self.RecoveryGoal and os.clock() - self.getLastMeaningfulProgressAt() < 1 then
+	if state == "STEER" and self.RecoveryGoal and os.clock() - self.LastMeaningfulProgressAt < 1 then
 		local heading = Vector3.new(self.RecoveryGoal.X - root.Position.X, 0, self.RecoveryGoal.Z - root.Position.Z)
 		if heading.Magnitude > 0.1 and (heading.Magnitude < 5 or os.clock() >= self.RecoveryUntil) then
 			local extended, found =
@@ -468,8 +529,8 @@ function Movement:updateRecoveryMovement()
 		end
 	end
 	self:commandMovement(Vector3.zero, false)
-	if state ~= "RETREAT" and not self.PathComputing and self.getNavigationGoal() then
-		self:requestPath(self.getNavigationGoal())
+	if state ~= "RETREAT" and not self.PathComputing and self.NavigationGoal then
+		self:requestPath(self.NavigationGoal)
 	end
 end
 
@@ -477,15 +538,15 @@ function Movement:runRecoveryPolicy()
 	if
 		os.clock() < self.RuntimeState.RespawnGraceUntil
 		or not self.getTarget()
-		or not self.getNavigationGoal()
-		or self.getState() == "COMBAT"
+		or not self.NavigationGoal
+		or self.State == "COMBAT"
 	then
 		return
 	end
-	local stuckFor = os.clock() - self.getLastMeaningfulProgressAt()
+	local stuckFor = os.clock() - self.LastMeaningfulProgressAt
 	if stuckFor >= self.Config.RespawnStuckTime then
 		if not self.isRespawnInProgress() then
-			self.recoverByRespawn(self.getTarget(), self.getLastMeaningfulProgressAt())
+			self.recoverByRespawn(self.getTarget(), self.LastMeaningfulProgressAt)
 		end
 		return
 	end
@@ -522,7 +583,7 @@ function Movement:pathRemainingMetric(navigationGoal: Vector3?): number
 	if not root or not navigationGoal then
 		return math.huge
 	end
-	if self.getState() ~= "PATH" or not self.PathWaypoints or not self.PathWaypoints[self.PathIndex] then
+	if self.State ~= "PATH" or not self.PathWaypoints or not self.PathWaypoints[self.PathIndex] then
 		return (navigationGoal - root.Position).Magnitude
 	end
 	local metric = (self.PathWaypoints[self.PathIndex].Position - root.Position).Magnitude
@@ -536,13 +597,13 @@ end
 function Movement:issueCurrentWaypoint()
 	local humanoid = self.getHumanoid()
 	local root = self.getRoot()
-	if self.getState() ~= "PATH" or not humanoid or not root or not self.PathWaypoints then
+	if self.State ~= "PATH" or not humanoid or not root or not self.PathWaypoints then
 		return
 	end
 	local waypoint = self.PathWaypoints[self.PathIndex]
 	if not waypoint then
 		self:disposePath()
-		self.setNavigationState("IDLE")
+		self:setNavigationState("IDLE")
 		return
 	end
 	if self.PathIssuedIndex == self.PathIndex then
@@ -608,7 +669,7 @@ function Movement:requestPath(goal: Vector3): boolean
 			newPath:Destroy()
 			self.RecoveryGoal = nil
 			self.RecoveryUntil = 0
-			self.setNavigationState("RECOVERY")
+			self:setNavigationState("RECOVERY")
 			return
 		end
 		self.ActivePath = newPath
@@ -628,8 +689,9 @@ function Movement:requestPath(goal: Vector3): boolean
 				self.PathNeedsRebuild = true
 			end
 		end)
-		self.setNavigationState("PATH")
-		self.setBestGoalMetric(self:pathRemainingMetric(self.getNavigationGoal()))
+		self:setNavigationState("PATH")
+		self.LastMeaningfulProgressAt = os.clock()
+		self.BestGoalMetric = self:pathRemainingMetric(self.NavigationGoal)
 		-- The async compute callback publishes state only. The next Heartbeat issues MoveTo.
 	end)
 	return true
@@ -637,8 +699,8 @@ end
 
 function Movement:updatePathNavigation()
 	local root = self.getRoot()
-	local navigationGoal = self.getNavigationGoal()
-	if self.getState() ~= "PATH" or not root or not self.PathWaypoints then
+	local navigationGoal = self.NavigationGoal
+	if self.State ~= "PATH" or not root or not self.PathWaypoints then
 		return
 	end
 	if self.PathNeedsRebuild then
@@ -649,7 +711,7 @@ function Movement:updatePathNavigation()
 	local waypoint = self.PathWaypoints[self.PathIndex]
 	if not waypoint then
 		self:disposePath()
-		self.setNavigationState("IDLE")
+		self:setNavigationState("IDLE")
 		return
 	end
 	-- A published path is not monitorable until its current waypoint has been issued.
@@ -668,18 +730,164 @@ function Movement:updatePathNavigation()
 		self.PathIssuedAt = 0
 		self.ActiveWaypointIssueSerial = 0
 		if advanced then
-			self.setBestGoalMetric(self:pathRemainingMetric(navigationGoal))
+			self.LastMeaningfulProgressAt = os.clock()
+			self.BestGoalMetric = self:pathRemainingMetric(navigationGoal)
 		end
 		self:issueCurrentWaypoint()
 		return
 	end
 	if waypointDistance <= self.PathBestWaypointDistance - self.Config.MeaningfulProgressDistance then
 		self.PathBestWaypointDistance = waypointDistance
-		self.setBestGoalMetric(self:pathRemainingMetric(navigationGoal))
+		self.LastMeaningfulProgressAt = os.clock()
+		self.BestGoalMetric = self:pathRemainingMetric(navigationGoal)
 	end
 	if self.PathIssuedIndex == self.PathIndex and self.PathIssuedAt > 0 and os.clock() - self.PathIssuedAt >= self.Config.WaypointTimeout then
 		self.PathNeedsRebuild = true
 		return
+	end
+end
+
+function Movement:getState(): string
+	return self.State
+end
+
+function Movement:setNavigationState(newState: string)
+	if self.State == newState then
+		return
+	end
+	self.telemetry("STATE", self.State .. " -> " .. newState)
+	self.State = newState
+	local activity = ({
+		IDLE = "IDLE", DIRECT = "MOVING TO ENEMY", PATH = "PATHING TO ENEMY",
+		COMBAT = "ATTACKING", RECOVERY = "RECOVERING", STEER = "MOVING TO ENEMY",
+		RETREAT = "RETREATING", EXPLORE = "EXPLORING", DODGE = "DODGING",
+	})[newState] or newState
+	self.RuntimeState.Activity = activity
+	local activeHazard = self.getActiveHazard()
+	self.RuntimeState.ActivityDetail = activeHazard and activeHazard:GetFullName() or ""
+end
+
+function Movement:resetProgress(target: Model?, goal: Vector3?)
+	self.ProgressTarget = target
+	self.ProgressGoalAnchor = goal
+	self.BestGoalMetric = math.huge
+	self.BestVerticalDifference = math.huge
+	self.LastMeaningfulProgressAt = os.clock()
+	self.LastProgressCheckAt = 0
+	self.RecoveryGoal = nil
+	self.RecoveryUntil = 0
+	self.SteeringTried = false
+end
+
+function Movement:setBestGoalMetric(value)
+	self.LastMeaningfulProgressAt = os.clock()
+	self.BestGoalMetric = value
+end
+
+function Movement:addProgressPause(pausedFor: number)
+	self.LastMeaningfulProgressAt += pausedFor
+	self.LastExploreMeaningfulProgressAt += pausedFor
+	self.LastDirectDecisionAt = 0
+end
+
+function Movement:markMeaningfulProgress()
+	self.LastMeaningfulProgressAt = os.clock()
+	self.BestGoalMetric = self:pathRemainingMetric(self.NavigationGoal)
+end
+
+function Movement:updateProgressTracking()
+	local root = self.getRoot()
+	local target = self.getTarget()
+	if not root or not target or not self.NavigationGoal then
+		return
+	end
+	local now = os.clock()
+	if self.ProgressTarget ~= target or not self.ProgressGoalAnchor then
+		self:resetProgress(target, self.NavigationGoal)
+		return
+	end
+	if now - self.LastProgressCheckAt < self.Config.ProgressCheckInterval then
+		return
+	end
+	self.LastProgressCheckAt = now
+	local metric = self:pathRemainingMetric(self.NavigationGoal)
+	local enemyRoot = self.getTargetRoot(target)
+	local vertical = enemyRoot and math.abs(enemyRoot.Position.Y - root.Position.Y) or math.huge
+	local verticalProgress = self.BestVerticalDifference < math.huge
+		and vertical <= self.BestVerticalDifference - self.Config.MeaningfulProgressDistance
+	if self.BestVerticalDifference == math.huge then
+		self.BestVerticalDifference = vertical
+	elseif verticalProgress then
+		self.BestVerticalDifference = vertical
+	end
+	if self.BestGoalMetric == math.huge then
+		self.BestGoalMetric = metric
+	elseif metric <= self.BestGoalMetric - self.Config.MeaningfulProgressDistance or verticalProgress then
+		self.BestGoalMetric = metric
+		self.LastMeaningfulProgressAt = now
+	end
+end
+
+function Movement:updateDirectMovement()
+	local root = self.getRoot()
+	local humanoid = self.getHumanoid()
+	if self.State ~= "DIRECT" or not humanoid or not root or not self.NavigationGoal then
+		return
+	end
+	local direction = Vector3.new(self.NavigationGoal.X - root.Position.X, 0, self.NavigationGoal.Z - root.Position.Z)
+	if direction.Magnitude <= self.Config.DirectReachedDistance then
+		self:commandMovement(Vector3.zero, false)
+	else
+		self:commandMovement(direction.Unit, false)
+	end
+end
+
+function Movement:decideNavigation()
+	local root = self.getRoot()
+	if not self.alive() or not self.getTarget() or not self.NavigationGoal or not root then
+		return
+	end
+	local now = os.clock()
+	if self.State == "PATH" then
+		if self.PathGoal and (self.NavigationGoal - self.PathGoal).Magnitude >= self.Config.PathGoalChangeDistance then
+			self.PathNeedsRebuild = true
+		end
+		return
+	end
+	if
+		(self.State == "RECOVERY" or self.State == "STEER") and (self.PathComputing or now < self.RecoveryUntil)
+	then
+		return
+	end
+	if now - self.LastDirectDecisionAt < self.Config.DirectDecisionInterval then
+		return
+	end
+	self.LastDirectDecisionAt = now
+	local progressing = now - self.LastMeaningfulProgressAt < self.Config.RecoveryRefreshAt
+	-- A moving target route may briefly fail a local probe at an edge. Keep DIRECT
+	-- while target progress proves that the current command is still productive.
+	if self.State == "DIRECT" and progressing then
+		return
+	end
+	local delta = self.NavigationGoal - root.Position
+	local localGoal = root.Position
+		+ (delta.Magnitude > 0.01 and delta.Unit or Vector3.zero)
+			* math.min(delta.Magnitude, self.Config.DetourProbeDistance)
+	local grounded = self:projectToWalkableGround(localGoal, self.getTarget())
+	local safeDirect = self:directRouteClear(grounded, self.getTarget()) and self.pointIsSafeFromHazards(grounded)
+	if safeDirect and (self.State ~= "DIRECT" or progressing) then
+		self:disposePath()
+		self.RecoveryGoal = nil
+		self:setNavigationState("DIRECT")
+	else
+		if not self.SteeringTried then
+			self.SteeringTried = true
+			self:beginLocalRecovery(self.NavigationGoal)
+			self:setNavigationState("STEER")
+		else
+			self:beginLocalRecovery(self.NavigationGoal)
+			self:requestPath(self.NavigationGoal)
+		end
 	end
 end
 
