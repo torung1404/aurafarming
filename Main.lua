@@ -50,6 +50,7 @@ local ConfigStore = require(script.Parent.Systems.ConfigStore)
 local SkillFXSystem = require(script.Parent.Systems.SkillFX)
 local DodgeControllerModule = require(script.Parent.Controllers.Dodge)
 local ReplayControllerModule = require(script.Parent.Controllers.Replay)
+local TargetingControllerModule = require(script.Parent.Controllers.Targeting)
 
 local NavigationState = {
 	IDLE = "IDLE",
@@ -138,8 +139,7 @@ local Combat = {
 	PlayerControlsDisabled = false,
 }
 
-local EnemySet: { [Model]: boolean } = {}
-local LastTargetAcquireAt = -math.huge
+local TargetingController
 local HazardSet: { [BasePart]: boolean } = {}
 local SkillFX = {
 	Models = {} :: { [Model]: { Model: Model, SpawnedAt: number, Hitboxes: { [BasePart]: boolean }, Precasts: { [BasePart]: boolean }, LastSeenAt: number } },
@@ -369,63 +369,31 @@ isInsideAnyEnemyFolder = function(model: Model): boolean
 	end
 	return false
 end
-local function isDummyTarget(model: Model): boolean
-	local cached = RuntimeState.DummyCache[model]
-	if cached ~= nil then
-		return cached
-	end
-	local dummy = false
-	local current: Instance? = model
-	while current and current ~= workspace do
-		if normalizeTargetName(current.Name):find("dummy", 1, true) then
-			dummy = true
-			break
-		end
-		current = current.Parent
-	end
-	RuntimeState.DummyCache[model] = dummy
-	return dummy
-end
+
+TargetingController = TargetingControllerModule.new({
+	Config = Config,
+	RuntimeState = RuntimeState,
+	Players = Players,
+	getCharacter = function() return Character end,
+	getRoot = function() return Root end,
+	getTargetRoot = getTargetRoot,
+	isEnemy = isEnemy,
+	isInsideAnyEnemyFolder = isInsideAnyEnemyFolder,
+	isBossTarget = isBossTarget,
+	skillRangeForTarget = skillRangeForTarget,
+	telemetry = telemetry,
+	logPerf = logPerf,
+})
+local EnemySet = TargetingController.EnemySet
+
 local function isValidCombatTarget(model: Model?): boolean
-	if not model or not Root or not model:IsDescendantOf(workspace) or model == Character or Players:GetPlayerFromCharacter(model) then
-		return false
-	end
-	local humanoid = model:FindFirstChildOfClass("Humanoid")
-	local root = getTargetRoot(model)
-	if not humanoid or humanoid.Health <= 0 or not root or (root.Position - Root.Position).Magnitude > Config.FarmRange * Config.TargetLockRangeMultiplier then
-		return false
-	end
-	if isDummyTarget(model) then
-		telemetry("TARGET_REJECT", "reject=" .. model:GetFullName() .. " reason=DUMMY")
-		return false
-	end
-	local activeRoot = RuntimeState.ActiveDungeonRoot
-	local activeStructure = activeRoot and activeRoot:IsDescendantOf(workspace) and model:IsDescendantOf(activeRoot)
-	return isInsideAnyEnemyFolder(model) or isEnemy(model) or activeStructure == true
+	return TargetingController:isValidCombatTarget(model)
 end
 local function validTarget(target: Model?): boolean
-	return isValidCombatTarget(target)
+	return TargetingController:validTarget(target)
 end
 local function registerEnemy(instance: Instance)
-	if not instance:IsA("Model") or instance == Character or Players:GetPlayerFromCharacter(instance) then
-		return
-	end
-	local startedAt = os.clock()
-	local humanoid = instance:FindFirstChildOfClass("Humanoid")
-	local root = getTargetRoot(instance)
-	if not humanoid or humanoid.Health <= 0 or not root then
-		RuntimeState.EnemyCandidates[instance] = nil
-		return
-	end
-	RuntimeState.EnemyCandidates[instance] = true
-	if Root and isValidCombatTarget(instance) then
-		local wasKnown = EnemySet[instance] == true
-		EnemySet[instance] = true
-		if Running and not wasKnown then
-			LastTargetAcquireAt = -math.huge
-		end
-	end
-	logPerf("registerEnemy", startedAt)
+	TargetingController:registerEnemy(instance, Running)
 end
 local function makeRaycastParams(target: Model?): RaycastParams
 	local parameters = RaycastParams.new()
@@ -544,7 +512,7 @@ scheduleDungeonCacheRebuild = function()
 		if not RuntimeState.ActiveDungeonRoot or not RuntimeState.ActiveDungeonRoot:IsDescendantOf(workspace) then
 			buildInitialCaches()
 		end
-		LastTargetAcquireAt = -math.huge
+		TargetingController:invalidateDecision()
 		logPerf("cacheRebuild", startedAt)
 	end)
 end
@@ -846,68 +814,11 @@ local function navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vect
 end
 
 local function acquireBestTarget(): Model?
-	if not Root then
-		return nil
-	end
-	local cheapCandidates = {}
-	for model in pairs(EnemySet) do
-		if not isValidCombatTarget(model) then
-			EnemySet[model] = nil
-		else
-			local enemyHumanoid = model:FindFirstChildOfClass("Humanoid")
-			local enemyRoot = getTargetRoot(model)
-			if enemyHumanoid and enemyRoot and enemyHumanoid.Health > 0 then
-				local delta = enemyRoot.Position - Root.Position
-				if delta.Magnitude <= Config.FarmRange then
-					table.insert(cheapCandidates, {
-						Model = model,
-						Vertical = math.abs(delta.Y),
-						Distance = delta.Magnitude,
-					})
-				end
-			end
-		end
-	end
-    if #cheapCandidates == 0 and os.clock() - RuntimeState.LastFallbackTargetScanAt >= 2 then
-        local fallbackStartedAt = os.clock()
-        RuntimeState.LastFallbackTargetScanAt = fallbackStartedAt
-        RuntimeState.refreshDungeonReferences()
-        local fallbackRoot = RuntimeState.ActiveDungeonRoot
-        if fallbackRoot and fallbackRoot:IsDescendantOf(workspace) then
-            for _, object in ipairs(fallbackRoot:GetDescendants()) do
-                if object:IsA("Model") and isValidCombatTarget(object) then
-                    local enemyRoot = getTargetRoot(object)
-                    if enemyRoot then
-                        local delta = enemyRoot.Position - Root.Position
-                        if delta.Magnitude <= Config.FarmRange then
-                            table.insert(cheapCandidates, { Model = object, Vertical = math.abs(delta.Y), Distance = delta.Magnitude })
-                        end
-                    end
-                end
-            end
-        end
-        logPerf("targetFallback", fallbackStartedAt)
-    end
-	table.sort(cheapCandidates, function(first, second)
-		return first.Distance < second.Distance
-	end)
-	local best = cheapCandidates[1]
-	if not best then
-		return nil
-	end
-	return best.Model
+	return TargetingController:acquireBestTarget()
 end
 
 local function targetMetrics(target: Model?): (number, number)
-	if not target or not Root then
-		return math.huge, math.huge
-	end
-	local enemyRoot = getTargetRoot(target)
-	if not enemyRoot then
-		return math.huge, math.huge
-	end
-	local delta = enemyRoot.Position - Root.Position
-	return math.abs(delta.Y), delta.Magnitude
+	return TargetingController:targetMetrics(target)
 end
 
 local function updateGlobalStuckJump()
@@ -1090,7 +1001,7 @@ bootstrapDungeon = function(root: Instance)
 		if object:IsA("Model") then
 			registerEnemy(object)
 			registerSkillModel(object)
-			LastTargetAcquireAt = -math.huge
+			TargetingController:invalidateDecision()
 		elseif object:IsA("BasePart") then
 			local owner = object:FindFirstAncestorOfClass("Model")
 			if owner then registerSkillModel(owner) end
@@ -1486,22 +1397,7 @@ local function activateSkill(toolName: string, key: Enum.KeyCode, context: strin
 end
 
 local function findNearestEnemyInSkillRange(): (Model?, BasePart?, number)
-	if not Root then return nil, nil, math.huge end
-	local best: Model? = nil
-	local bestRoot: BasePart? = nil
-	local bestDistance = math.huge
-	for model in pairs(EnemySet) do
-		if isValidCombatTarget(model) then
-			local enemyRoot = getTargetRoot(model)
-			if enemyRoot then
-				local distance = (enemyRoot.Position - Root.Position).Magnitude
-				if distance <= skillRangeForTarget(model) and distance < bestDistance then
-					best, bestRoot, bestDistance = model, enemyRoot, distance
-				end
-			end
-		end
-	end
-	return best, bestRoot, bestDistance
+	return TargetingController:findNearestEnemyInSkillRange()
 end
 
 local function useCombatSkills(enemyRoot: BasePart, distance3D: number)
@@ -2243,8 +2139,8 @@ local function updateTargetAndObjective()
 	local now = os.clock()
 	if not validTarget(Target) then
 		local invalidTarget = Target
-		if invalidTarget or now - LastTargetAcquireAt >= Config.TargetAcquireInterval then
-			LastTargetAcquireAt = now
+		if invalidTarget or now - TargetingController.LastTargetAcquireAt >= Config.TargetAcquireInterval then
+			TargetingController.LastTargetAcquireAt = now
 			local acquired = acquireBestTarget()
 			if acquired then
 				resetNavigationForTarget(acquired)
@@ -2284,7 +2180,7 @@ local function updateTargetAndObjective()
 	local enemyHumanoid = Target:FindFirstChildOfClass("Humanoid")
 	if not enemyRoot or (enemyHumanoid and enemyHumanoid.Health <= 0) then
 		resetNavigationForTarget(nil)
-		LastTargetAcquireAt = now
+		TargetingController.LastTargetAcquireAt = now
 		local acquired = acquireBestTarget()
 		if acquired then
 			resetNavigationForTarget(acquired)
@@ -2307,8 +2203,8 @@ local function updateTargetAndObjective()
 		end)
 	end
 	NoTargetSince = nil
-	if now - LastTargetAcquireAt >= Config.TargetAcquireInterval and State ~= NavigationState.DODGE then
-		LastTargetAcquireAt = now
+	if now - TargetingController.LastTargetAcquireAt >= Config.TargetAcquireInterval and State ~= NavigationState.DODGE then
+		TargetingController.LastTargetAcquireAt = now
 		local candidate = acquireBestTarget()
 		local _, currentDistance = targetMetrics(Target)
 		local _, candidateDistance = targetMetrics(candidate)
@@ -2467,7 +2363,7 @@ setRunning = function(value: boolean)
 	if value then
 		disablePlayerControls()
 		applyMovementSpeed()
-		LastTargetAcquireAt = -math.huge
+		TargetingController:invalidateDecision()
 		NoTargetSince = os.clock()
 		resetProgress(nil, nil)
 	else
@@ -2778,7 +2674,7 @@ table.insert(
 			bindCharacter(character)
 			if Running then
 				task.wait(0.35)
-				LastTargetAcquireAt = -math.huge
+				TargetingController:invalidateDecision()
 			end
 		end)
 	end)
