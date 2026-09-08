@@ -1028,7 +1028,19 @@ function Movement.new(context)
 	self.DescentRiseStrikes = 0
 	self.ExploredCells = {} :: { [string]: boolean }
 	self.ExploredCellOrder = {} :: { string }
-	self.NavigationState = context.NavigationState
+
+	self.NavigationState = context.NavigationState or {
+		IDLE = "IDLE",
+		DIRECT = "DIRECT",
+		STEER = "STEER",
+		RETREAT = "RETREAT",
+		PATH = "PATH",
+		COMBAT = "COMBAT",
+		RECOVERY = "RECOVERY",
+		DODGE = "DODGE",
+		EXPLORE = "EXPLORE",
+	}
+
 	self.State = self.NavigationState.IDLE
 	self.NavigationGoal = nil :: Vector3?
 	self.GoalTarget = nil :: Model?
@@ -1908,7 +1920,6 @@ function Movement:stopTranslation()
 end
 
 return Movement
-
 ]=],
 	["Controllers/Replay.lua"] = [=[
 local Replay = {}
@@ -2760,7 +2771,6 @@ MovementController = MovementControllerModule.new({
 	RuntimeState = RuntimeState,
 	PathfindingService = PathfindingService,
 	NavigationState = NavigationState,
-
 	getCharacter = function() return Character end,
 	getHumanoid = function() return Humanoid end,
 	getRoot = function() return Root end,
@@ -5241,7 +5251,6 @@ print("[BOOT_END] SOURCE COMPLETE")
 -- no full dungeon scan before CORE READY
 -- final source marker present
 -- AUTOFARM_PHYSICAL_EOF
-
 ]=],
 	["Runtime.lua"] = [=[
 -- Shared in-memory runtime state. Persistence belongs exclusively to Systems.ConfigStore.
@@ -6074,7 +6083,6 @@ local function runNode(node)
 	if Cache[path] ~= nil then
 		return Cache[path]
 	end
-
 	assert(not Loading[path], "circular require: " .. path)
 	Loading[path] = true
 
@@ -6095,7 +6103,6 @@ local function runNode(node)
 	local ok, result = xpcall(chunk, debug.traceback)
 	Loading[path] = nil
 	assert(ok, result)
-
 	Cache[path] = result
 	return result
 end
