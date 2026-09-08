@@ -21,10 +21,10 @@ until each subsystem is mechanically moved and validated.
 - `Runtime.lua`
 - `Systems/SkillFX.lua`
 - `Controllers/Dodge.lua`
+- `Controllers/Replay.lua`
 
 ## Remaining monolith sections
 
-- Replay FSM
 - Targeting/enemy cache
 - Movement/navigation
 - Combat input
@@ -56,6 +56,13 @@ until each subsystem is mechanically moved and validated.
 - Dodge runtime owner check: `ActiveHazard`, `DodgeGoal`,
   `LastHazardThreatAt`, and `NearbyActiveHazards` are owned by
   `Controllers/Dodge.lua`.
+- Replay button discovery, replay click dispatch, replay result detection,
+  opener discovery, phase transitions, retry/confirm FSM, and replay arming
+  moved into `Controllers/Replay.lua`. Main retains wrappers while lifecycle
+  migration is pending.
+- Replay state owner check: Replay FSM state remains in `Runtime.lua` and is
+  mutated only through `Controllers/Replay.lua` wrappers plus remaining
+  lifecycle reset code.
 - Fixed invalid `Combat` table constructor in `Main.lua`; table keys are now
   direct fields instead of `Combat.Field = value`.
 - Removed duplicate `config.AutoStart = true` from `Systems/ConfigStore.lua`.
@@ -64,6 +71,7 @@ until each subsystem is mechanically moved and validated.
 - Current dependency direction:
   `Main.lua -> Runtime.lua`,
   `Main.lua -> Controllers/Dodge.lua`,
+  `Main.lua -> Controllers/Replay.lua`,
   `Main.lua -> Systems/SkillFX.lua`,
   `Main.lua -> Systems/ConfigStore.lua -> Config.lua`.
 - Static Luau CLI validation could not run because no `luau` binary is
