@@ -1,6 +1,4 @@
 -- Auto-generated Delta bundle.
--- Main.lua is transformed only inside this bundle to avoid Luau's 200-local limit.
-
 local SOURCES = {
 	["Config.lua"] = [=[
 -- Safe defaults only. User/runtime overrides are loaded by Systems.ConfigStore.
@@ -2755,14 +2753,47 @@ end
 function registerEnemy(instance: Instance)
 	TargetingController:registerEnemy(instance, Running)
 end
+local refreshNearbyActiveHazards
+local dodgeRouteClear
 MovementController = MovementControllerModule.new({
 	Config = Config,
 	RuntimeState = RuntimeState,
+	PathfindingService = PathfindingService,
+	NavigationState = NavigationState,
+
 	getCharacter = function() return Character end,
 	getHumanoid = function() return Humanoid end,
 	getRoot = function() return Root end,
 	getTarget = function() return Target end,
-	pointIsSafeFromHazards = function(position) return pointIsSafeFromHazards(position) end,
+	getEnabled = function() return Enabled end,
+	getRunning = function() return Running end,
+	alive = function() return alive() end,
+	getTargetRoot = getTargetRoot,
+	getActiveHazard = function()
+		return DodgeController and DodgeController:getActiveHazard() or nil
+	end,
+	validTarget = validTarget,
+	recoverByRespawn = function(...)
+		return recoverByRespawn(...)
+	end,
+	isRespawnInProgress = function()
+		return RespawnInProgress
+	end,
+	refreshNearbyActiveHazards = function()
+		if refreshNearbyActiveHazards then
+			return refreshNearbyActiveHazards()
+		end
+	end,
+	dodgeRouteClear = function(goal)
+		if dodgeRouteClear then
+			return dodgeRouteClear(goal)
+		end
+		return true
+	end,
+	telemetry = telemetry,
+	pointIsSafeFromHazards = function(position)
+		return pointIsSafeFromHazards(position)
+	end,
 })
 function makeRaycastParams(target: Model?): RaycastParams
 	return MovementController:makeRaycastParams(target)
@@ -4424,7 +4455,7 @@ function updateDodgeController(): boolean
 	return DodgeController:update()
 end
 
-function LifecycleController:update()
+function updateDungeonReplayState()
 	local now = os.clock()
 	if now - RuntimeState.LastDungeonStateCheckAt < 0.25 then
 		return
@@ -6043,6 +6074,7 @@ local function runNode(node)
 	if Cache[path] ~= nil then
 		return Cache[path]
 	end
+
 	assert(not Loading[path], "circular require: " .. path)
 	Loading[path] = true
 
@@ -6063,6 +6095,7 @@ local function runNode(node)
 	local ok, result = xpcall(chunk, debug.traceback)
 	Loading[path] = nil
 	assert(ok, result)
+
 	Cache[path] = result
 	return result
 end
