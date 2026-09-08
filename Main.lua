@@ -48,6 +48,7 @@ print("[BOOT] startup begin")
 print("[BOOT2] CONFIG")
 local ConfigStore = require(script.Parent.Systems.ConfigStore)
 local SkillFXSystem = require(script.Parent.Systems.SkillFX)
+local DodgeControllerModule = require(script.Parent.Controllers.Dodge)
 
 local NavigationState = {
 	IDLE = "IDLE",
@@ -143,10 +144,6 @@ local SkillFX = {
 	Models = {} :: { [Model]: { Model: Model, SpawnedAt: number, Hitboxes: { [BasePart]: boolean }, Precasts: { [BasePart]: boolean }, LastSeenAt: number } },
 	Hitboxes = {} :: { [BasePart]: boolean },
 }
-local ActiveHazard: BasePart? = nil
-local DodgeGoal: Vector3? = nil
-local LastHazardThreatAt = -math.huge
-local NearbyActiveHazards: { [BasePart]: boolean } = {}
 local ExploreGoal: Vector3? = nil
 local ExploreHeading: Vector3? = nil
 local ExploreCommitUntil = 0
@@ -177,6 +174,9 @@ local stopTranslation
 local resetRuntimeForNewDungeon
 local getTargetRoot
 local updateObsidianStatus
+local cancelPathRequest
+local pathRemainingMetric
+local restoreRotation
 
 local function logPerf(name: string, startedAt: number)
 	local elapsed = (os.clock() - startedAt) * 1000
@@ -294,6 +294,7 @@ local normalizeTargetName
 local isInsideAnyEnemyFolder
 local hazardNameHint
 local SkillFXController
+local DodgeController
 
 local function isBossTarget(model: Model): boolean
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
@@ -509,13 +510,7 @@ local function unregisterSkillModel(model: Model)
 end
 
 local function skillPartThreatens(part: BasePart, position: Vector3, padding: number): boolean
-	if not part:IsDescendantOf(workspace) or not hazardThreatensHeight(part, position) then
-		return false
-	end
-	local localPoint = part.CFrame:PointToObjectSpace(position)
-	local halfX = part.Size.X * 0.5 + padding
-	local halfZ = part.Size.Z * 0.5 + padding
-	return math.abs(localPoint.X) <= halfX and math.abs(localPoint.Z) <= halfZ
+	return DodgeController:skillPartThreatens(part, position, padding)
 end
 
 local function registerHazard(instance: Instance)
@@ -552,262 +547,63 @@ scheduleDungeonCacheRebuild = function()
 	end)
 end
 
-local function hazardRadius(part: BasePart): number
-	-- Use the largest horizontal XZ extent; Y height must not inflate a floor-AoE radius.
-	local rightExtent = Vector2.new(part.CFrame.RightVector.X, part.CFrame.RightVector.Z).Magnitude * part.Size.X
-	local upExtent = Vector2.new(part.CFrame.UpVector.X, part.CFrame.UpVector.Z).Magnitude * part.Size.Y
-	local lookExtent = Vector2.new(part.CFrame.LookVector.X, part.CFrame.LookVector.Z).Magnitude * part.Size.Z
-	return math.max(rightExtent, upExtent, lookExtent) * 0.5
-end
+DodgeController = DodgeControllerModule.new({
+	Config = Config,
+	RuntimeState = RuntimeState,
+	NavigationState = NavigationState,
+	ActiveSkillModels = ActiveSkillModels,
+	getRoot = function() return Root end,
+	getHumanoid = function() return Humanoid end,
+	getTarget = function() return Target end,
+	getState = function() return State end,
+	setNavigationState = function(nextState) setNavigationState(nextState) end,
+	getNavigationGoal = function() return NavigationGoal end,
+	getPathWaypoints = function() return PathWaypoints end,
+	getPathIndex = function() return PathIndex end,
+	getRecoveryGoal = function() return RecoveryGoal end,
+	getExploreGoal = function() return ExploreGoal end,
+	setBestGoalMetric = function(value) BestGoalMetric = value end,
+	addProgressPause = function(pausedFor)
+		LastMeaningfulProgressAt += pausedFor
+		LastExploreMeaningfulProgressAt += pausedFor
+		LastDirectDecisionAt = 0
+	end,
+	alive = function() return Running and alive() end,
+	validTarget = validTarget,
+	restoreRotation = function() restoreRotation() end,
+	commandMovement = function(direction, jump) commandMovement(direction, jump) end,
+	cancelPathRequest = function() cancelPathRequest() end,
+	makeRaycastParams = makeRaycastParams,
+	projectToWalkableGround = projectToWalkableGround,
+	hasGroundSupport = hasGroundSupport,
+	rootGroundOffset = rootGroundOffset,
+	unregisterSkillModel = unregisterSkillModel,
+	telemetry = telemetry,
+	pathRemainingMetric = function() return pathRemainingMetric() end,
+})
 
 RuntimeState.predictedHazardRadius = function(part: BasePart): (number, boolean)
-	local now = os.clock()
-	local currentRadius = hazardRadius(part)
-	local previous = RuntimeState.HazardHistory[part]
-	local growing = false
-	local predictedRadius = currentRadius
-	if previous then
-		local elapsed = now - previous.LastSeenAt
-		if elapsed > 0.02 and currentRadius > previous.LastRadius + 0.05 then
-			growing = true
-			predictedRadius += (currentRadius - previous.LastRadius) / elapsed * Config.DodgeLookaheadSeconds
-		end
-	end
-	RuntimeState.HazardHistory[part] = {
-		LastRadius = currentRadius,
-		LastPosition = part.Position,
-		LastSeenAt = now,
-	}
-	return predictedRadius, growing
+	return DodgeController:predictedHazardRadius(part)
 end
 
-local function flatPointDistance(first: Vector3, second: Vector3): number
-	return Vector2.new(first.X - second.X, first.Z - second.Z).Magnitude
-end
-
-local function hazardVerticalHalfExtent(part: BasePart): number
-	local worldUp = Vector3.yAxis
-	return math.abs(part.CFrame.RightVector:Dot(worldUp)) * part.Size.X * 0.5
-		+ math.abs(part.CFrame.UpVector:Dot(worldUp)) * part.Size.Y * 0.5
-		+ math.abs(part.CFrame.LookVector:Dot(worldUp)) * part.Size.Z * 0.5
+local function hazardRadius(part: BasePart): number
+	return DodgeController:hazardRadius(part)
 end
 
 hazardThreatensHeight = function(part: BasePart, position: Vector3): boolean
-	return math.abs(position.Y - part.Position.Y)
-		<= hazardVerticalHalfExtent(part) + rootGroundOffset() + Config.DodgeVerticalPadding
-end
-
-local function playerFootprintRadius(): number
-	if not Root then
-		return Config.DodgePlayerSafetyMargin
-	end
-	return math.max(Root.Size.X, Root.Size.Z) * 0.5 + Config.DodgePlayerSafetyMargin
+	return DodgeController:hazardThreatensHeight(part, position)
 end
 
 local function refreshNearbyActiveHazards()
-	if not Config.DodgeEnabled then
-		table.clear(NearbyActiveHazards)
-		return
-	end
-	if not Root then
-		table.clear(NearbyActiveHazards)
-		return
-	end
-	local now = os.clock()
-	if now - RuntimeState.LastHazardRefreshAt < Config.DodgeRefreshInterval then
-		return
-	end
-	RuntimeState.LastHazardRefreshAt = now
-	table.clear(NearbyActiveHazards)
-	for model, skill in pairs(ActiveSkillModels) do
-		if not model:IsDescendantOf(workspace) then
-			unregisterSkillModel(model)
-		else
-			skill.LastSeenAt = now
-			for part in pairs(skill.Hitboxes) do
-				if part:IsDescendantOf(workspace) and (part.Position - Root.Position).Magnitude <= Config.DodgeDetectionRadius + hazardRadius(part) then
-					NearbyActiveHazards[part] = true
-				end
-			end
-			for part in pairs(skill.Precasts) do
-				if part:IsDescendantOf(workspace) and (part.Position - Root.Position).Magnitude <= Config.DodgeDetectionRadius + hazardRadius(part) then
-					NearbyActiveHazards[part] = true
-				end
-			end
-		end
-	end
+	DodgeController:refreshNearbyActiveHazards()
 end
 
 local function pointIsSafeFromHazards(position: Vector3): boolean
-	if not Config.DodgeEnabled then
-		return true
-	end
-	for part in pairs(NearbyActiveHazards) do
-		if
-			part:IsDescendantOf(workspace)
-			and skillPartThreatens(part, position, playerFootprintRadius() + Config.DodgeSafePadding)
-		then
-			return false
-		end
-	end
-	return true
-end
-
-local function upcomingMovementGoal(): Vector3?
-	if not Root then
-		return nil
-	end
-	if State == NavigationState.DIRECT then
-		return NavigationGoal
-	elseif State == NavigationState.PATH and PathWaypoints then
-		local waypoint = PathWaypoints[PathIndex]
-		return waypoint and waypoint.Position or nil
-	elseif State == NavigationState.RECOVERY or State == NavigationState.STEER or State == NavigationState.RETREAT then
-		return RecoveryGoal
-	elseif State == NavigationState.EXPLORE then
-		return ExploreGoal
-	elseif State == NavigationState.DODGE then
-		return DodgeGoal
-	end
-	return Root.Position
-end
-
-local function segmentDistanceXZ(point: Vector3, first: Vector3, second: Vector3): number
-	local segment = Vector2.new(second.X - first.X, second.Z - first.Z)
-	local relative = Vector2.new(point.X - first.X, point.Z - first.Z)
-	local denominator = segment:Dot(segment)
-	if denominator <= 0.001 then
-		return relative.Magnitude
-	end
-	local alpha = math.clamp(relative:Dot(segment) / denominator, 0, 1)
-	return (relative - segment * alpha).Magnitude
-end
-
-local function threateningHazard(): (BasePart?, boolean, number, number)
-	if not Root then
-		return nil, false, math.huge, math.huge
-	end
-	refreshNearbyActiveHazards()
-	local nearest: BasePart? = nil
-	local nearestEdge = math.huge
-	local nearestPredicted = false
-	local nearestRouteDistance = math.huge
-	local bestThreatScore = math.huge
-	local footprint = playerFootprintRadius()
-	local movementGoal = upcomingMovementGoal()
-	local predictedEnd = Root.Position
-	if movementGoal then
-		local flat = Vector3.new(movementGoal.X - Root.Position.X, 0, movementGoal.Z - Root.Position.Z)
-		local lookahead = math.clamp((Humanoid and Humanoid.WalkSpeed or 16) * Config.DodgeLookaheadSeconds, 8, 36)
-		if flat.Magnitude > 0.1 then
-			predictedEnd = Root.Position + flat.Unit * math.min(flat.Magnitude, lookahead)
-		end
-	end
-	for part in pairs(NearbyActiveHazards) do
-		if part:IsDescendantOf(workspace) and skillPartThreatens(part, Root.Position, footprint + Config.DodgeSafePadding) then
-			local centerDistance = flatPointDistance(Root.Position, part.Position)
-			if centerDistance <= Config.DodgeDetectionRadius then
-				local predictedRadius, growing = RuntimeState.predictedHazardRadius(part)
-				local effectiveRadius = predictedRadius + footprint + Config.DodgeSafePadding
-				local edgeDistance = centerDistance - effectiveRadius
-				local routeDistance = segmentDistanceXZ(part.Position, Root.Position, predictedEnd)
-				local routeClearance = routeDistance - effectiveRadius
-				local predicted = routeClearance <= Config.DodgePreTriggerPadding
-				local threatScore = math.min(edgeDistance, routeClearance)
-				if (edgeDistance <= Config.DodgeTriggerPadding or predicted) and threatScore < bestThreatScore then
-					bestThreatScore = threatScore
-					nearestEdge = edgeDistance
-					nearest = part
-					nearestPredicted = predicted
-					nearestRouteDistance = routeDistance
-					RuntimeState.CurrentHazardRadius = predictedRadius
-					RuntimeState.CurrentHazardGrowing = growing
-					if growing then
-						print(string.format("[DODGE] expanding radius=%.1f", predictedRadius))
-					end
-				end
-			end
-		end
-	end
-	return nearest, nearestPredicted, nearestEdge, nearestRouteDistance
+	return DodgeController:pointIsSafeFromHazards(position)
 end
 
 local function dodgeRouteClear(goal: Vector3): boolean
-	if not Config.DodgeEnabled then
-		return true
-	end
-	if not Root then
-		return false
-	end
-	local flatDelta = Vector3.new(goal.X - Root.Position.X, 0, goal.Z - Root.Position.Z)
-	if flatDelta.Magnitude <= 0.1 then
-		return true
-	end
-	local obstacle = workspace:Raycast(Root.Position + Vector3.new(0, 2.5, 0), flatDelta, makeRaycastParams(nil))
-	if obstacle and obstacle.Distance < flatDelta.Magnitude - 1.5 then
-		return false
-	end
-	local previous = Root.Position
-	for index = 1, math.max(3, math.ceil(flatDelta.Magnitude / 3)) do
-		local count = math.max(3, math.ceil(flatDelta.Magnitude / 3))
-		local grounded, found = projectToWalkableGround(Root.Position:Lerp(goal, index / count), Target)
-		if not found or math.abs(grounded.Y - previous.Y) > Config.ExploreMaxVerticalStep then
-			return false
-		end
-		for hazard in pairs(NearbyActiveHazards) do
-			if isActiveHazardPart(hazard) and hazardThreatensHeight(hazard, grounded) then
-				local startDistance = flatPointDistance(Root.Position, hazard.Position)
-				local radius = hazardRadius(hazard) + playerFootprintRadius()
-				local sampleDistance = flatPointDistance(grounded, hazard.Position)
-				-- Leaving an overlapping hazard is allowed, crossing a new one is not.
-				if sampleDistance < math.min(radius, startDistance) - 0.1 then
-					return false
-				end
-			end
-		end
-		previous = grounded
-	end
-	return hasGroundSupport(goal, nil)
-end
-
-local function chooseNearestSafeDodgeGoal(hazard: BasePart): Vector3?
-	if not Root then
-		return nil
-	end
-	local fromCenter = Vector3.new(Root.Position.X - hazard.Position.X, 0, Root.Position.Z - hazard.Position.Z)
-	local baseAngle = fromCenter.Magnitude > 0.1 and math.atan2(fromCenter.Z, fromCenter.X) or 0
-	local bestGoal: Vector3? = nil
-	local bestDistance = math.huge
-	local footprint = playerFootprintRadius()
-	local safeEdge = hazardRadius(hazard) + footprint + Config.DodgeSafePadding
-	local ringDistances = { safeEdge + 2, safeEdge + 7, safeEdge + 12 }
-	for ringIndex, ringDistance in ipairs(ringDistances) do
-		for angleIndex = 0, Config.DodgeCandidateCount - 1 do
-			local angle = baseAngle + angleIndex * math.pi * 2 / Config.DodgeCandidateCount
-			local candidate = Root.Position
-				+ Vector3.new(math.cos(angle) * ringDistance, 0, math.sin(angle) * ringDistance)
-			local grounded, foundGround = projectToWalkableGround(candidate, nil)
-			local rejection = if not foundGround
-				then "no-ground"
-				elseif math.abs(grounded.Y - Root.Position.Y) > Config.DirectVerticalTolerance then "wrong-floor"
-				elseif not pointIsSafeFromHazards(grounded) then "hazard-overlap"
-				elseif not dodgeRouteClear(grounded) then "blocked-or-gap"
-				else nil
-			if not rejection then
-				local distance = flatPointDistance(Root.Position, grounded)
-				if not bestGoal or distance < bestDistance then
-					bestDistance = distance
-					bestGoal = grounded
-				end
-			else
-				telemetry("DODGE_REJECT_" .. tostring(ringIndex) .. "_" .. tostring(angleIndex), rejection)
-			end
-		end
-		if bestGoal then
-			return bestGoal
-		end
-	end
-	return bestGoal
+	return DodgeController:dodgeRouteClear(goal)
 end
 
 RuntimeState.exploreCellKey = function(position: Vector3): string
@@ -1755,7 +1551,7 @@ local function ensureAimObjects()
 	Combat.AimAlignment.Parent = Root
 end
 
-local function restoreRotation()
+restoreRotation = function()
 	if Combat.AimAlignment then
 		Combat.AimAlignment.Enabled = false
 	end
@@ -2060,7 +1856,7 @@ local function disposePath()
 	ActiveWaypointIssueSerial = 0
 end
 
-local function cancelPathRequest()
+cancelPathRequest = function()
 	PathRequestSerial += 1
 	PathComputing = false
 	disposePath()
@@ -2078,7 +1874,8 @@ setNavigationState = function(newState: string)
 		RETREAT = "RETREATING", EXPLORE = "EXPLORING", DODGE = "DODGING",
 	})[newState] or newState
 	RuntimeState.Activity = activity
-	RuntimeState.ActivityDetail = ActiveHazard and ActiveHazard:GetFullName() or ""
+	local activeHazard = DodgeController:getActiveHazard()
+	RuntimeState.ActivityDetail = activeHazard and activeHazard:GetFullName() or ""
 end
 
 local function resetProgress(target: Model?, goal: Vector3?)
@@ -2093,7 +1890,7 @@ local function resetProgress(target: Model?, goal: Vector3?)
 	SteeringTried = false
 end
 
-local function pathRemainingMetric(): number
+pathRemainingMetric = function(): number
 	if not Root or not NavigationGoal then
 		return math.huge
 	end
@@ -2489,322 +2286,15 @@ local function resetNavigationForTarget(newTarget: Model?)
 end
 
 local function clearDodgeObjective()
-	ActiveHazard = nil
-	DodgeGoal = nil
-	RuntimeState.CurrentHazardRadius = 0
-	RuntimeState.CurrentHazardGrowing = false
-	LastHazardThreatAt = -math.huge
-	RuntimeState.LastDodgeGoalAttemptAt = -math.huge
-end
-
-resetRuntimeForNewDungeon = function()
-	RuntimeState.RoundResetSerial += 1
-	local resetSerial = RuntimeState.RoundResetSerial
-	local now = os.clock()
-	cancelPathRequest()
-	Target = nil
-	GoalTarget = nil
-	NavigationGoal = nil
-	RecoveryGoal = nil
-	RecoveryUntil = 0
-	SteeringTried = false
-	clearDodgeObjective()
-	RuntimeState.DodgeStartedAt = 0
-	table.clear(NearbyActiveHazards)
-	RuntimeState.LastHazardRefreshAt = -math.huge
-	clearExploreObjective()
-	ExploreHeading = nil
-	ExploreBestDistance = math.huge
-	LastExploreSelectionAt = -math.huge
-	table.clear(ExploredCells)
-	table.clear(ExploredCellOrder)
-	ProgressTarget = nil
-	ProgressGoalAnchor = nil
-	BestGoalMetric = math.huge
-	BestVerticalDifference = math.huge
-	LastMeaningfulProgressAt = now
-	LastProgressCheckAt = 0
-	LastDirectDecisionAt = 0
-	RuntimeState.LastGoalRefreshAt = 0
-	LastPathBuildAt = -math.huge
-	ResetExecuting = false
-	RespawnInProgress = false
-	RuntimeState.JumpBurstGeneration += 1
-	RuntimeState.JumpStillSince = now
-	RuntimeState.JumpBestDistance = math.huge
-	RuntimeState.JumpBestVertical = math.huge
-	RuntimeState.JumpBurstUntil = 0
-	RuntimeState.JumpBurstTaskRunning = false
-	LastTargetAcquireAt = -math.huge
-	RuntimeState.LastFallbackTargetScanAt = -math.huge
-	NoTargetSince = now
-	Combat.NextQAt, Combat.NextEAt, Combat.LastAttack = 0, 0, 0
-	State = NavigationState.IDLE
-	stopTranslation()
-	disconnectAll(DungeonConnections)
-	table.clear(EnemySet)
-	table.clear(RuntimeState.EnemyCandidates)
-	table.clear(HazardSet)
-	table.clear(ActiveSkillModels)
-	table.clear(ActiveSkillHitboxes)
-	table.clear(RuntimeState.HazardHistory)
-	table.clear(RuntimeState.EnemyFolders)
-	table.clear(RuntimeState.DummyCache)
-	RuntimeState.DungeonFinishedInstance = nil
-	RuntimeState.PreviousDungeonFinishedInstance = nil
-	RuntimeState.DungeonFinishedLastState = false
-	RuntimeState.ActiveDungeonRoot = nil
-	RuntimeState.DungeonIdentity = nil
-	RuntimeState.FightingBossInstance = nil
-	RuntimeState.EnemyFolderInstance = nil
-	RuntimeState.DungeonTimeInstance = nil
-	RuntimeState.DungeonTimeText = nil
-	RuntimeState.LastTimerSource = nil
-	RuntimeState.LastTimerValue = nil
-	RuntimeState.LastTimerScanAt = -math.huge
-	RuntimeState.LastDungeonReferenceSearchAt = -math.huge
-	RuntimeState.ReplayArmedAt = 0
-	RuntimeState.ReplayLastActionAt = -math.huge
-	RuntimeState.RespawnGraceUntil = 0
-	RuntimeState.ReplayAwaitingClose = nil
-	RuntimeState.ReplayYesButton = nil
-	RuntimeState.ReplayDebugButton = nil
-	RuntimeState.ReplayModal = nil
-	RuntimeState.ReplayCompletionRoot = nil
-	RuntimeState.ReplayOpener = nil
-	RuntimeState.ReplayConfirmRoot = nil
-	RuntimeState.ReplayPhase = "IDLE"
-	RuntimeState.ReplayPhaseEnteredAt = now
-	RuntimeState.ReplayRetries = 0
-	RuntimeState.ReplayResultScanDirty = true
-	RuntimeState.ReplayOpenerMissingReported = false
-	RuntimeState.ReplayCompletionDetected = false
-	RuntimeState.ReplayResultKind = nil
-	RuntimeState.LastFightingBossState = false
-	RuntimeState.FightingBossSeenThisRound = false
-	if RuntimeState.BossDiedConnection then
-		RuntimeState.BossDiedConnection:Disconnect()
-		RuntimeState.BossDiedConnection = nil
-	end
-	RuntimeState.BossDiedTarget = nil
-	RuntimeState.StartMarker = nil
-	RuntimeState.StartButton = nil
-	RuntimeState.StartDebugMarker = nil
-	RuntimeState.StartDebugButton = nil
-	RuntimeState.LastStartMarkerScanAt = -math.huge
-	RuntimeState.VerticalPathTarget = nil
-	RuntimeState.VerticalPathGoal = nil
-	RuntimeState.DungeonBootstrapped = false
-	RuntimeState.RoundPhase = "UNKNOWN"
-	task.delay(0.4, function()
-		if Enabled and Running and resetSerial == RuntimeState.RoundResetSerial then
-			buildInitialCaches()
-			LastTargetAcquireAt = -math.huge
-		end
-	end)
+	DodgeController:clearObjective()
 end
 
 local function leaveDodge()
-	telemetry("DODGE_EXIT", ActiveHazard and ("inactive=" .. ActiveHazard:GetFullName()) or "no-active-hazard")
-	ActiveHazard = nil
-	DodgeGoal = nil
-	-- Pause, rather than erase, the accumulated no-progress duration.
-	local pausedFor = math.max(0, os.clock() - RuntimeState.DodgeStartedAt)
-	LastMeaningfulProgressAt += pausedFor
-	LastExploreMeaningfulProgressAt += pausedFor
-	BestGoalMetric = pathRemainingMetric()
-	LastDirectDecisionAt = 0
-	setNavigationState(NavigationState.IDLE)
-	if not Target or not validTarget(Target) then
-		restoreRotation()
-	end
+	DodgeController:leave()
 end
 
 local function updateDodgeController(): boolean
-	if not Config.DodgeEnabled then
-		if State == NavigationState.DODGE then
-			leaveDodge()
-		end
-		return false
-	end
-
-	if not Running or not alive() or not Root or not Humanoid then
-		return false
-	end
-	local hazard, predicted, edgeDistance, routeDistance = threateningHazard()
-	if not hazard then
-		if State == NavigationState.DODGE then
-			if os.clock() - LastHazardThreatAt < Config.DodgeExitHysteresis then
-				if DodgeGoal then
-					local direction = Vector3.new(DodgeGoal.X - Root.Position.X, 0, DodgeGoal.Z - Root.Position.Z)
-					commandMovement(direction.Magnitude > 1.5 and direction.Unit or Vector3.zero, false)
-				else
-					commandMovement(Vector3.zero, false)
-				end
-				return true
-			end
-			leaveDodge()
-		end
-		return false
-	end
-	LastHazardThreatAt = os.clock()
-
-	local needsNewGoal = State ~= NavigationState.DODGE
-		or ActiveHazard ~= hazard
-		or not DodgeGoal
-		or not pointIsSafeFromHazards(DodgeGoal)
-	if needsNewGoal then
-		if State ~= NavigationState.DODGE then
-			RuntimeState.DodgeStartedAt = os.clock()
-		end
-		if State == NavigationState.DODGE and os.clock() - RuntimeState.LastDodgeGoalAttemptAt < 0.2 then
-			local escape = Vector3.new(Root.Position.X - hazard.Position.X, 0, Root.Position.Z - hazard.Position.Z)
-			commandMovement(escape.Magnitude > 0.1 and escape.Unit or Vector3.new(1, 0, 0), false)
-			return true
-		end
-		RuntimeState.LastDodgeGoalAttemptAt = os.clock()
-		cancelPathRequest()
-		ActiveHazard = hazard
-		telemetry(
-			"DODGE_ENTER",
-			string.format(
-				"reason=%s class=%s name=%s parent=%s color=%s transparency=%.2f size=%s verticalDelta=%.1f edge=%.1f route=%.1f",
-				predicted and "predicted-route" or "current-edge",
-				hazard.ClassName,
-				hazard.Name,
-				hazard.Parent and hazard.Parent:GetFullName() or "nil",
-				tostring(hazard.Color),
-				hazard.Transparency,
-				tostring(hazard.Size),
-				math.abs(Root.Position.Y - hazard.Position.Y),
-				edgeDistance,
-				routeDistance
-			)
-		)
-		DodgeGoal = chooseNearestSafeDodgeGoal(hazard)
-		if not DodgeGoal then
-			-- Use the outward edge only when it stays on this floor and the route is verified.
-			local outward = Vector3.new(Root.Position.X - hazard.Position.X, 0, Root.Position.Z - hazard.Position.Z)
-			if outward.Magnitude <= 0.1 then
-				outward = Vector3.new(1, 0, 0)
-			end
-			local fallback = hazard.Position + outward.Unit * (hazardRadius(hazard) + Config.DodgeSafePadding + 1)
-			fallback = Vector3.new(fallback.X, Root.Position.Y, fallback.Z)
-			local grounded, foundGround = projectToWalkableGround(fallback, nil)
-			if
-				foundGround
-				and math.abs(grounded.Y - Root.Position.Y) <= Config.DirectVerticalTolerance
-				and pointIsSafeFromHazards(grounded)
-				and dodgeRouteClear(grounded)
-			then
-				DodgeGoal = grounded
-			end
-		end
-		setNavigationState(NavigationState.DODGE)
-		telemetry("DODGE_GOAL", DodgeGoal and tostring(DodgeGoal) or "no-safe-goal")
-	end
-
-	if not DodgeGoal then
-		local escape = Vector3.new(Root.Position.X - hazard.Position.X, 0, Root.Position.Z - hazard.Position.Z)
-		if escape.Magnitude <= 0.1 then
-			escape = Vector3.new(1, 0, 0)
-		end
-		local escapeGoal = Root.Position + escape.Unit * math.max(10, hazardRadius(hazard) + Config.DodgeSafePadding)
-		local grounded, foundGround = projectToWalkableGround(escapeGoal, nil)
-		if foundGround and math.abs(grounded.Y - Root.Position.Y) <= Config.DirectVerticalTolerance and dodgeRouteClear(grounded) then
-			DodgeGoal = grounded
-			print("[DODGE] emergency escape")
-		else
-			local tangent = Vector3.new(-escape.Z, 0, escape.X).Unit
-			local tangentGround, tangentFound = projectToWalkableGround(Root.Position + tangent * math.max(8, hazardRadius(hazard)), nil)
-			if tangentFound and math.abs(tangentGround.Y - Root.Position.Y) <= Config.DirectVerticalTolerance and dodgeRouteClear(tangentGround) then
-				DodgeGoal = tangentGround
-				print("[DODGE] best-effort tangent escape")
-			end
-		end
-		if not DodgeGoal then
-			print("[DODGE] no perfect goal, using best-effort")
-			commandMovement(escape.Unit, false)
-			return true
-		end
-	end
-	local direction = Vector3.new(DodgeGoal.X - Root.Position.X, 0, DodgeGoal.Z - Root.Position.Z)
-	if direction.Magnitude <= 1.5 then
-		commandMovement(Vector3.zero, false)
-	else
-		commandMovement(direction.Unit, false)
-	end
-	return true
-end
-
-local function runRecoveryPolicy()
-	if os.clock() < RuntimeState.RespawnGraceUntil or not Target or not NavigationGoal or State == NavigationState.COMBAT then
-		return
-	end
-	local stuckFor = os.clock() - LastMeaningfulProgressAt
-	if stuckFor >= Config.RespawnStuckTime then
-		if not RespawnInProgress then
-			recoverByRespawn(Target, LastMeaningfulProgressAt)
-		end
-		return
-	end
-end
-
-recoverByRespawn = function(
-	expectedTarget: Model?,
-	expectedProgressAt: number?,
-	exploreRecovery: boolean?,
-	globalStuckAt: number?
-)
-	if RespawnInProgress then
-		return
-	end
-	RespawnInProgress = true
-	task.spawn(function()
-		task.wait(0.4)
-		if not Enabled or not Running then
-			RespawnInProgress = false
-			return
-		end
-		if expectedTarget then
-			if
-				State == NavigationState.DODGE
-				or Target ~= expectedTarget
-				or LastMeaningfulProgressAt ~= expectedProgressAt
-				or os.clock() - LastMeaningfulProgressAt < Config.RespawnStuckTime
-			then
-				RespawnInProgress = false
-				return
-			end
-		elseif exploreRecovery then
-			if State == NavigationState.DODGE or Target or LastExploreMeaningfulProgressAt ~= expectedProgressAt then
-				RespawnInProgress = false
-				return
-			end
-		elseif globalStuckAt then
-			if RuntimeState.JumpStillSince ~= globalStuckAt then
-				RespawnInProgress = false
-				return
-			end
-		elseif alive() then
-			RespawnInProgress = false
-			return
-		end
-		ResetExecuting = true
-		resetNavigationForTarget(nil)
-		-- Roblox Reset Character sequence. R resets; L would select Leave Game.
-		local resetCharacter = Character
-		for _, key in ipairs({ Enum.KeyCode.Escape, Enum.KeyCode.R, Enum.KeyCode.Return, Enum.KeyCode.Return }) do
-			if not Enabled or not Running or Character ~= resetCharacter or State == NavigationState.DODGE then
-				break
-			end
-			sendKey(key)
-			task.wait(0.5)
-		end
-		task.wait(3)
-		ResetExecuting = false
-		RespawnInProgress = false
-	end)
+	return DodgeController:update()
 end
 
 local function updateDungeonReplayState()
@@ -3323,8 +2813,9 @@ updateObsidianStatus = function()
 	local timerText = timer and string.format("%02d:%02d", math.floor(timer / 60), math.floor(timer % 60)) or "--"
 	local graceRemaining = math.max(0, RuntimeState.RespawnGraceUntil - os.clock())
 	local hazardText = "None"
-	if ActiveHazard and ActiveHazard:IsDescendantOf(workspace) then
-		hazardText = string.format("%s / %.1f%s", ActiveHazard.Name, RuntimeState.CurrentHazardRadius, RuntimeState.CurrentHazardGrowing and " / predicted-growing" or "")
+	local activeHazard = DodgeController:getActiveHazard()
+	if activeHazard and activeHazard:IsDescendantOf(workspace) then
+		hazardText = string.format("%s / %.1f%s", activeHazard.Name, RuntimeState.CurrentHazardRadius, RuntimeState.CurrentHazardGrowing and " / predicted-growing" or "")
 	end
 	local values = {
 		Round = "Round: " .. tostring(RuntimeState.RoundPhase),
