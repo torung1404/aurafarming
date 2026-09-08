@@ -16,8 +16,15 @@ function Movement.new(context)
 	self.getState = context.getState
 	self.setNavigationState = context.setNavigationState
 	self.getNavigationGoal = context.getNavigationGoal
-	self.beginLocalRecovery = context.beginLocalRecovery
 	self.setBestGoalMetric = context.setBestGoalMetric
+	self.getLastMeaningfulProgressAt = context.getLastMeaningfulProgressAt
+	self.getTargetRoot = context.getTargetRoot
+	self.validTarget = context.validTarget
+	self.recoverByRespawn = context.recoverByRespawn
+	self.isRespawnInProgress = context.isRespawnInProgress
+	self.refreshNearbyActiveHazards = context.refreshNearbyActiveHazards
+	self.dodgeRouteClear = context.dodgeRouteClear
+	self.telemetry = context.telemetry
 	self.pointIsSafeFromHazards = context.pointIsSafeFromHazards
 	self.ActivePath = nil :: Path?
 	self.PathWaypoints = nil :: { PathWaypoint }?
@@ -31,6 +38,20 @@ function Movement.new(context)
 	self.PathIssuedAt = 0
 	self.PathBestWaypointDistance = math.huge
 	self.ActiveWaypointIssueSerial = 0
+	self.RecoveryGoal = nil :: Vector3?
+	self.RecoveryUntil = 0
+	self.SteeringTried = false
+	self.ExploreGoal = nil :: Vector3?
+	self.ExploreHeading = nil :: Vector3?
+	self.ExploreCommitUntil = 0
+	self.ExploreBestDistance = math.huge
+	self.LastExploreMeaningfulProgressAt = os.clock()
+	self.LastExploreSelectionAt = -math.huge
+	self.NoTargetSince = nil :: number?
+	self.DescentLocked = false
+	self.DescentRiseStrikes = 0
+	self.ExploredCells = {} :: { [string]: boolean }
+	self.ExploredCellOrder = {} :: { string }
 	return self
 end
 
@@ -49,6 +70,10 @@ function Movement:makeRaycastParams(target: Model?): RaycastParams
 	parameters.IgnoreWater = true
 	parameters.RespectCanCollide = true
 	return parameters
+end
+
+function Movement:flatPointDistance(first: Vector3, second: Vector3): number
+	return Vector2.new(first.X - second.X, first.Z - second.Z).Magnitude
 end
 
 function Movement:rootGroundOffset(): number
@@ -215,6 +240,257 @@ function Movement:chooseRecoveryDetour(goal: Vector3, retreat: boolean?, dodgeRo
 	return bestGoal
 end
 
+function Movement:exploreCellKey(position: Vector3): string
+	local size = self.Config.ExploreHistoryCellSize
+	return string.format(
+		"%d:%d:%d",
+		math.floor(position.X / size),
+		math.floor(position.Y / size),
+		math.floor(position.Z / size)
+	)
+end
+
+function Movement:rememberExplorePosition(position: Vector3)
+	local key = self:exploreCellKey(position)
+	if self.ExploredCells[key] then
+		return
+	end
+	self.ExploredCells[key] = true
+	table.insert(self.ExploredCellOrder, key)
+	if #self.ExploredCellOrder > self.Config.ExploreHistoryLimit then
+		local oldest = table.remove(self.ExploredCellOrder, 1)
+		self.ExploredCells[oldest] = nil
+	end
+end
+
+function Movement:evaluateExploreDirection(direction: Vector3): (Vector3?, number, string, number)
+	local root = self.getRoot()
+	if not root then
+		return nil, -math.huge, "no-root", 0
+	end
+	local stepDistance = self.Config.ExploreStepDistance
+	local obstacle =
+		workspace:Raycast(root.Position + Vector3.new(0, 2.5, 0), direction * stepDistance, self:makeRaycastParams(nil))
+	if obstacle and obstacle.Distance < stepDistance - 1.5 then
+		return nil, -math.huge, "wall", 0
+	end
+	local previousGround = root.Position
+	local finalGround: Vector3? = nil
+	for sampleIndex = 1, self.Config.ExploreProbeSamples do
+		local alpha = sampleIndex / self.Config.ExploreProbeSamples
+		local sample = root.Position + direction * (stepDistance * alpha)
+		local ground, foundGround = self:projectToWalkableGround(sample, nil)
+		if not foundGround then
+			return nil, -math.huge, "gap", 0
+		end
+		if math.abs(ground.Y - previousGround.Y) > self.Config.ExploreMaxVerticalStep then
+			return nil, -math.huge, ground.Y < previousGround.Y and "unsafe-drop" or "unsafe-rise", 0
+		end
+		if not self.pointIsSafeFromHazards(ground) then
+			return nil, -math.huge, "hazard", 0
+		end
+		previousGround = ground
+		finalGround = ground
+	end
+	if not finalGround then
+		return nil, -math.huge, "no-ground", 0
+	end
+	local continuity = self.ExploreHeading and math.max(-1, math.min(1, self.ExploreHeading:Dot(direction))) or 0
+	local downhillDelta = root.Position.Y - finalGround.Y
+	local novelty = self.ExploredCells[self:exploreCellKey(finalGround)] and -14 or 12
+	local downhillBonus = math.clamp(downhillDelta * 1.25, -5, 7)
+	local score = 30 + continuity * 8 + novelty + downhillBonus
+	return finalGround,
+		score,
+		string.format(
+			"score=%.1f continuity=%.2f novelty=%.1f downhill=%.1f",
+			score,
+			continuity,
+			novelty,
+			downhillDelta
+		),
+		downhillDelta
+end
+
+function Movement:chooseExploreGoal(): (Vector3?, Vector3?, number)
+	local root = self.getRoot()
+	if not root then
+		return nil, nil, 0
+	end
+	self.refreshNearbyActiveHazards()
+	local forward = self.ExploreHeading or Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+	if forward.Magnitude <= 0.1 then
+		forward = Vector3.new(0, 0, -1)
+	else
+		forward = forward.Unit
+	end
+	local baseAngle = math.atan2(forward.Z, forward.X)
+	local bestGoal: Vector3? = nil
+	local bestDirection: Vector3? = nil
+	local bestScore = -math.huge
+	local bestDownhill = 0
+	for index = 0, self.Config.ExploreCandidateCount - 1 do
+		local angle = baseAngle + index * math.pi * 2 / self.Config.ExploreCandidateCount
+		local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
+		local goal, score, reason, downhill = self:evaluateExploreDirection(direction)
+		self.telemetry("EXPLORE_CANDIDATE_" .. tostring(index), reason)
+		if goal and score > bestScore then
+			bestGoal, bestDirection, bestScore, bestDownhill = goal, direction, score, downhill
+		end
+	end
+	if bestGoal then
+		self.telemetry("EXPLORE_GOAL", string.format("goal=%s score=%.1f", tostring(bestGoal), bestScore))
+	else
+		self.telemetry("EXPLORE_GOAL", "no-safe-candidate")
+	end
+	return bestGoal, bestDirection, bestDownhill
+end
+
+function Movement:clearExploreObjective()
+	self.ExploreGoal = nil
+	self.ExploreCommitUntil = 0
+	self.ExploreBestDistance = math.huge
+	self.DescentLocked = false
+	self.DescentRiseStrikes = 0
+end
+
+function Movement:extendDescentGoal(now: number): boolean
+	local root = self.getRoot()
+	if not self.DescentLocked or not self.ExploreHeading or not root then
+		return false
+	end
+	local goal, _, reason, downhill = self:evaluateExploreDirection(self.ExploreHeading)
+	if not goal then
+		self.telemetry("DESCENT_RELEASE", reason)
+		self.DescentLocked = false
+		self.DescentRiseStrikes = 0
+		return false
+	end
+	if downhill < -self.Config.DescentFlatTolerance then
+		self.DescentRiseStrikes += 1
+		if self.DescentRiseStrikes >= self.Config.DescentRiseReleaseCount then
+			self.telemetry("DESCENT_RELEASE", string.format("rising downhill=%.1f", downhill))
+			self.DescentLocked = false
+			self.DescentRiseStrikes = 0
+			return false
+		end
+	else
+		self.DescentRiseStrikes = 0
+	end
+	self.ExploreGoal = goal
+	self.ExploreBestDistance = self:flatPointDistance(root.Position, goal)
+	self.ExploreCommitUntil = now + self.Config.ExploreCommitTime
+	self.telemetry("DESCENT_EXTEND", string.format("goal=%s downhill=%.1f", tostring(goal), downhill))
+	return true
+end
+
+function Movement:updateExploreMovement()
+	local root = self.getRoot()
+	local humanoid = self.getHumanoid()
+	if self.getState() ~= "EXPLORE" or not root or not humanoid or not self.ExploreGoal or self.getTarget() then
+		return
+	end
+	local direction = Vector3.new(self.ExploreGoal.X - root.Position.X, 0, self.ExploreGoal.Z - root.Position.Z)
+	local distance = direction.Magnitude
+	if distance <= self.Config.ExploreReachedDistance then
+		self:commandMovement(Vector3.zero, false)
+		return
+	end
+	if distance <= self.ExploreBestDistance - self.Config.MeaningfulProgressDistance then
+		self.ExploreBestDistance = distance
+		self.LastExploreMeaningfulProgressAt = os.clock()
+	end
+	if os.clock() - self.LastExploreMeaningfulProgressAt >= self.Config.ExploreRespawnStuckTime and not self.isRespawnInProgress() then
+		self.recoverByRespawn(nil, self.LastExploreMeaningfulProgressAt, true)
+		return
+	end
+	self:commandMovement(direction.Unit, false)
+end
+
+function Movement:beginLocalRecovery(goal: Vector3)
+	self.RecoveryGoal = self:chooseRecoveryDetour(goal, nil, self.dodgeRouteClear)
+	self.RecoveryUntil = os.clock() + self.Config.DetourDuration
+	self.setNavigationState("RECOVERY")
+end
+
+function Movement:updateRecoveryMovement()
+	local root = self.getRoot()
+	local humanoid = self.getHumanoid()
+	local state = self.getState()
+	local target = self.getTarget()
+	if
+		(state ~= "RECOVERY" and state ~= "STEER" and state ~= "RETREAT")
+		or not humanoid
+		or not root
+	then
+		return
+	end
+	if state == "RETREAT" and target and self.validTarget(target) then
+		local enemyRoot = self.getTargetRoot(target)
+		if enemyRoot then
+			local away = Vector3.new(root.Position.X - enemyRoot.Position.X, 0, root.Position.Z - enemyRoot.Position.Z)
+			local direction = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
+			local retreatPoint, foundGround = self:projectToWalkableGround(root.Position + direction * 7, target)
+			if
+				foundGround
+				and math.abs(retreatPoint.Y - root.Position.Y) <= self.Config.DirectVerticalTolerance
+				and self:hasGroundSupport(retreatPoint, target)
+				and self:directRouteClear(retreatPoint, target)
+			then
+				self:commandMovement(direction, false)
+			else
+				self:commandMovement(Vector3.zero, false)
+			end
+			return
+		end
+	end
+	if state == "STEER" and self.RecoveryGoal and os.clock() - self.getLastMeaningfulProgressAt() < 1 then
+		local heading = Vector3.new(self.RecoveryGoal.X - root.Position.X, 0, self.RecoveryGoal.Z - root.Position.Z)
+		if heading.Magnitude > 0.1 and (heading.Magnitude < 5 or os.clock() >= self.RecoveryUntil) then
+			local extended, found =
+				self:projectToWalkableGround(root.Position + heading.Unit * self.Config.DetourProbeDistance, target)
+			if
+				found
+				and self:directRouteClear(extended, target)
+				and self.dodgeRouteClear(extended)
+				and self.pointIsSafeFromHazards(extended)
+			then
+				self.RecoveryGoal = extended
+				self.RecoveryUntil = os.clock() + self.Config.DetourDuration
+			end
+		end
+	end
+	if self.RecoveryGoal and os.clock() < self.RecoveryUntil then
+		local direction = Vector3.new(self.RecoveryGoal.X - root.Position.X, 0, self.RecoveryGoal.Z - root.Position.Z)
+		if direction.Magnitude > self.Config.WaypointReachedDistance then
+			self:commandMovement(direction.Unit, false)
+			return
+		end
+	end
+	self:commandMovement(Vector3.zero, false)
+	if state ~= "RETREAT" and not self.PathComputing and self.getNavigationGoal() then
+		self:requestPath(self.getNavigationGoal())
+	end
+end
+
+function Movement:runRecoveryPolicy()
+	if
+		os.clock() < self.RuntimeState.RespawnGraceUntil
+		or not self.getTarget()
+		or not self.getNavigationGoal()
+		or self.getState() == "COMBAT"
+	then
+		return
+	end
+	local stuckFor = os.clock() - self.getLastMeaningfulProgressAt()
+	if stuckFor >= self.Config.RespawnStuckTime then
+		if not self.isRespawnInProgress() then
+			self.recoverByRespawn(self.getTarget(), self.getLastMeaningfulProgressAt())
+		end
+		return
+	end
+end
+
 function Movement:disposePath()
 	if self.RuntimeState.PathBlockedConnection then
 		self.RuntimeState.PathBlockedConnection:Disconnect()
@@ -330,7 +606,8 @@ function Movement:requestPath(goal: Vector3): boolean
 		local waypoints = ok and newPath.Status == Enum.PathStatus.Success and newPath:GetWaypoints() or nil
 		if not waypoints or #waypoints < 2 then
 			newPath:Destroy()
-			self.beginLocalRecovery(nil, 0)
+			self.RecoveryGoal = nil
+			self.RecoveryUntil = 0
 			self.setNavigationState("RECOVERY")
 			return
 		end
@@ -365,7 +642,7 @@ function Movement:updatePathNavigation()
 		return
 	end
 	if self.PathNeedsRebuild then
-		self.beginLocalRecovery(navigationGoal or root.Position)
+		self:beginLocalRecovery(navigationGoal or root.Position)
 		self:requestPath(navigationGoal or root.Position)
 		return
 	end
