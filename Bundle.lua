@@ -1,4 +1,6 @@
--- Auto-generated single-file bundle for Delta
+-- Auto-generated Delta bundle.
+-- Main.lua is transformed only inside this bundle to avoid Luau's 200-local limit.
+
 local SOURCES = {
 	["Config.lua"] = [=[
 -- Safe defaults only. User/runtime overrides are loaded by Systems.ConfigStore.
@@ -2348,7 +2350,7 @@ return Targeting
 
 print("[BOOT0] AUTOFARM ENTERED")
 
-local function bootStep(name, callback)
+function bootStep(name, callback)
 	print("[BOOT] BEGIN " .. name)
 	local ok, result = xpcall(callback, function(err)
 		return debug.traceback(tostring(err), 2)
@@ -2416,7 +2418,7 @@ local NavigationState = {
 }
 
 local Environment = (type(getgenv) == "function" and getgenv()) or _G
-local function getCapability(name: string)
+function getCapability(name: string)
 	local value = Environment[name]
 	if value == nil then
 		value = rawget(_G, name)
@@ -2438,7 +2440,7 @@ local Config = ConfigStore.load(HttpService, Environment)
 
 local RuntimeState
 
-local function saveConfig()
+function saveConfig()
 	ConfigStore.save(HttpService, Config)
 end
 
@@ -2532,14 +2534,14 @@ local cancelPathRequest
 local pathRemainingMetric
 local restoreRotation
 
-local function logPerf(name: string, startedAt: number)
+function logPerf(name: string, startedAt: number)
 	local elapsed = (os.clock() - startedAt) * 1000
 	if elapsed >= 8 then
 		print(string.format("[PERF] %s=%.1fms", name, elapsed))
 	end
 end
 
-local function telemetry(event: string, message: string)
+function telemetry(event: string, message: string)
 	if not Config.DebugTelemetry or LastTelemetry[event] == message then
 		return
 	end
@@ -2613,24 +2615,24 @@ RuntimeState.sendStatusWebhook = function(event: string)
 	end)
 end
 
-local function disconnect(connection: RBXScriptConnection?)
+function disconnect(connection: RBXScriptConnection?)
 	if connection and connection.Connected then
 		connection:Disconnect()
 	end
 end
 
-local function disconnectAll(list: { RBXScriptConnection })
+function disconnectAll(list: { RBXScriptConnection })
 	for index = #list, 1, -1 do
 		disconnect(list[index])
 		list[index] = nil
 	end
 end
 
-local function alive(): boolean
+function alive(): boolean
 	return Character ~= nil and Humanoid ~= nil and Root ~= nil and Character.Parent ~= nil and Humanoid.Health > 0
 end
 
-local function isEnemy(model: Model): boolean
+function isEnemy(model: Model): boolean
 	local current: Instance? = model
 	while current and current ~= workspace do
 		local name = current.Name:lower()
@@ -2656,7 +2658,7 @@ local DungeonResolver
 local LifecycleController
 local CombatController
 
-local function isBossTarget(model: Model): boolean
+function isBossTarget(model: Model): boolean
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 or not model:IsDescendantOf(workspace) then
 		return false
@@ -2677,7 +2679,7 @@ local function isBossTarget(model: Model): boolean
 	end
 	return false
 end
-local function skillRangeForTarget(target: Model): number
+function skillRangeForTarget(target: Model): number
 	local boss = isBossTarget(target)
 	local range = boss and Config.BossSkillRange or Config.NormalSkillRange
 	local signature = (boss and "BOSS" or "NORMAL") .. ":" .. tostring(range)
@@ -2744,13 +2746,13 @@ TargetingController = TargetingControllerModule.new({
 })
 local EnemySet = TargetingController.EnemySet
 
-local function isValidCombatTarget(model: Model?): boolean
+function isValidCombatTarget(model: Model?): boolean
 	return TargetingController:isValidCombatTarget(model)
 end
-local function validTarget(target: Model?): boolean
+function validTarget(target: Model?): boolean
 	return TargetingController:validTarget(target)
 end
-local function registerEnemy(instance: Instance)
+function registerEnemy(instance: Instance)
 	TargetingController:registerEnemy(instance, Running)
 end
 MovementController = MovementControllerModule.new({
@@ -2762,19 +2764,19 @@ MovementController = MovementControllerModule.new({
 	getTarget = function() return Target end,
 	pointIsSafeFromHazards = function(position) return pointIsSafeFromHazards(position) end,
 })
-local function makeRaycastParams(target: Model?): RaycastParams
+function makeRaycastParams(target: Model?): RaycastParams
 	return MovementController:makeRaycastParams(target)
 end
 
-local function rootGroundOffset(): number
+function rootGroundOffset(): number
 	return MovementController:rootGroundOffset()
 end
 
-local function projectToWalkableGround(position: Vector3, target: Model?): (Vector3, boolean)
+function projectToWalkableGround(position: Vector3, target: Model?): (Vector3, boolean)
 	return MovementController:projectToWalkableGround(position, target)
 end
 
-local function hasGroundSupport(position: Vector3, target: Model?): boolean
+function hasGroundSupport(position: Vector3, target: Model?): boolean
 	return MovementController:hasGroundSupport(position, target)
 end
 
@@ -2800,7 +2802,7 @@ hazardNameHint = function(part: BasePart): boolean
 	return false
 end
 
-local function isHazardCandidate(part: BasePart): boolean
+function isHazardCandidate(part: BasePart): boolean
 	if Character and part:IsDescendantOf(Character) then
 		return false
 	end
@@ -2811,32 +2813,32 @@ local function isHazardCandidate(part: BasePart): boolean
 	return hazardNameHint(part) or (broadAndThin and not elongated)
 end
 
-local function isActiveHazardPart(part: BasePart): boolean
+function isActiveHazardPart(part: BasePart): boolean
 	return SkillFXController:isActiveHazardPart(part)
 end
 
 local hazardThreatensHeight
 
-local function registerSkillModel(model: Model)
+function registerSkillModel(model: Model)
 	SkillFXController:registerModel(model)
 end
 
-local function unregisterSkillModel(model: Model)
+function unregisterSkillModel(model: Model)
 	SkillFXController:unregisterModel(model)
 end
 
-local function skillPartThreatens(part: BasePart, position: Vector3, padding: number): boolean
+function skillPartThreatens(part: BasePart, position: Vector3, padding: number): boolean
 	return DodgeController:skillPartThreatens(part, position, padding)
 end
 
-local function registerHazard(instance: Instance)
+function registerHazard(instance: Instance)
 	-- Cache structural candidates, not only parts that happen to be red at creation time.
 	if instance:IsA("BasePart") and (isHazardCandidate(instance) or isActiveHazardPart(instance)) then
 		HazardSet[instance] = true
 	end
 end
 
-local function buildInitialCaches()
+function buildInitialCaches()
 	local startedAt = os.clock()
 	RuntimeState.refreshDungeonReferences()
 	logPerf("dungeonBootstrap", startedAt)
@@ -2902,7 +2904,7 @@ RuntimeState.predictedHazardRadius = function(part: BasePart): (number, boolean)
 	return DodgeController:predictedHazardRadius(part)
 end
 
-local function hazardRadius(part: BasePart): number
+function hazardRadius(part: BasePart): number
 	return DodgeController:hazardRadius(part)
 end
 
@@ -2910,15 +2912,15 @@ hazardThreatensHeight = function(part: BasePart, position: Vector3): boolean
 	return DodgeController:hazardThreatensHeight(part, position)
 end
 
-local function refreshNearbyActiveHazards()
+function refreshNearbyActiveHazards()
 	DodgeController:refreshNearbyActiveHazards()
 end
 
-local function pointIsSafeFromHazards(position: Vector3): boolean
+function pointIsSafeFromHazards(position: Vector3): boolean
 	return DodgeController:pointIsSafeFromHazards(position)
 end
 
-local function dodgeRouteClear(goal: Vector3): boolean
+function dodgeRouteClear(goal: Vector3): boolean
 	return DodgeController:dodgeRouteClear(goal)
 end
 
@@ -3026,7 +3028,7 @@ RuntimeState.chooseExploreGoal = function(): (Vector3?, Vector3?, number)
 	return bestGoal, bestDirection, bestDownhill
 end
 
-local function clearExploreObjective()
+function clearExploreObjective()
 	ExploreGoal = nil
 	ExploreCommitUntil = 0
 	ExploreBestDistance = math.huge
@@ -3063,7 +3065,7 @@ RuntimeState.extendDescentGoal = function(now: number): boolean
 	return true
 end
 
-local function updateExploreMovement()
+function updateExploreMovement()
 	if State ~= NavigationState.EXPLORE or not Root or not Humanoid or not ExploreGoal or Target then
 		return
 	end
@@ -3084,11 +3086,11 @@ local function updateExploreMovement()
 	commandMovement(direction.Unit, false)
 end
 
-local function directRouteClear(goal: Vector3, target: Model?): boolean
+function directRouteClear(goal: Vector3, target: Model?): boolean
 	return MovementController:directRouteClear(goal, target)
 end
 
-local function navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vector3
+function navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vector3
 	if not Root then
 		return enemyRoot.Position
 	end
@@ -3137,15 +3139,15 @@ local function navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vect
 	return desired
 end
 
-local function acquireBestTarget(): Model?
+function acquireBestTarget(): Model?
 	return TargetingController:acquireBestTarget()
 end
 
-local function targetMetrics(target: Model?): (number, number)
+function targetMetrics(target: Model?): (number, number)
 	return TargetingController:targetMetrics(target)
 end
 
-local function updateGlobalStuckJump()
+function updateGlobalStuckJump()
 	if not Running or not alive() or not Root or not Humanoid then
 		RuntimeState.JumpStillSince = os.clock()
 		RuntimeState.JumpBestDistance = math.huge
@@ -3196,7 +3198,7 @@ local function updateGlobalStuckJump()
 	end
 end
 
-local function guiRoots(): { Instance }
+function guiRoots(): { Instance }
 	local roots: { Instance } = { PlayerGui }
 	if type(gethui) == "function" then
 		local ok, hiddenUi = pcall(gethui)
@@ -3207,7 +3209,7 @@ local function guiRoots(): { Instance }
 	return roots
 end
 
-local function visibleGui(object: Instance): boolean
+function visibleGui(object: Instance): boolean
 	local current: Instance? = object
 	while current do
 		if current:IsA("GuiObject") and not current.Visible then
@@ -3220,7 +3222,7 @@ local function visibleGui(object: Instance): boolean
 	return true
 end
 
-local function buttonHasText(button: GuiButton, expected: string): boolean
+function buttonHasText(button: GuiButton, expected: string): boolean
 	local function matches(object: Instance): boolean
 		return (object:IsA("TextButton") or object:IsA("TextLabel"))
 			and visibleGui(object)
@@ -3249,31 +3251,31 @@ ReplayController = ReplayControllerModule.new({
 	telemetry = telemetry,
 })
 
-local function findReplayButton(): GuiButton?
+function findReplayButton(): GuiButton?
 	return ReplayController:findButton()
 end
 
-local function clickReplayButton(button: GuiButton)
+function clickReplayButton(button: GuiButton)
 	ReplayController:clickButton(button)
 end
 
-local function setReplayPhase(phase: string)
+function setReplayPhase(phase: string)
 	ReplayController:setPhase(phase)
 end
 
-local function findReplayResult(): GuiObject?
+function findReplayResult(): GuiObject?
 	return ReplayController:findResult()
 end
 
-local function findReplayOpener(): GuiButton?
+function findReplayOpener(): GuiButton?
 	return ReplayController:findOpener()
 end
 
-local function tryReplayDungeon()
+function tryReplayDungeon()
 	ReplayController:tryReplayDungeon()
 end
 
-local function armReplayToken(reason: string)
+function armReplayToken(reason: string)
 	ReplayController:arm(reason)
 end
 
@@ -3541,11 +3543,11 @@ RuntimeState.remainingDungeonTime = function(): number?
 	return nil
 end
 
-local function normalizeStartText(value: string): string
+function normalizeStartText(value: string): string
 	return value:lower():gsub("[%s%p_]", "")
 end
 
-local function startMarkerText(object: GuiObject): string?
+function startMarkerText(object: GuiObject): string?
 	if not (object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox")) then
 		return nil
 	end
@@ -3556,7 +3558,7 @@ local function startMarkerText(object: GuiObject): string?
 	return content ~= "" and content or object.Text
 end
 
-local function findStartMarker(): GuiObject?
+function findStartMarker(): GuiObject?
 	local nameFallback: GuiObject? = nil
 	for _, uiRoot in ipairs(guiRoots()) do
 		for _, object in ipairs(uiRoot:GetDescendants()) do
@@ -3576,7 +3578,7 @@ end
 
 local resolveStartButton
 
-local function cachedStartScreen(): (GuiObject?, GuiButton?)
+function cachedStartScreen(): (GuiObject?, GuiButton?)
 	local marker = RuntimeState.StartMarker
 	if marker and marker:IsDescendantOf(game) and visibleGui(marker) then
 		local button = RuntimeState.StartButton
@@ -3624,7 +3626,7 @@ resolveStartButton = function(marker: GuiObject): GuiButton?
 	return nil
 end
 
-local function getVimClickPoint(guiObject: GuiObject, xRatio: number, yRatio: number): (number, number, Vector2)
+function getVimClickPoint(guiObject: GuiObject, xRatio: number, yRatio: number): (number, number, Vector2)
 	local point = guiObject.AbsolutePosition
 		+ Vector2.new(guiObject.AbsoluteSize.X * xRatio, guiObject.AbsoluteSize.Y * yRatio)
 	local screenGui: ScreenGui? = nil
@@ -3643,14 +3645,14 @@ local function getVimClickPoint(guiObject: GuiObject, xRatio: number, yRatio: nu
 	return point.X, point.Y, inset
 end
 
-local function setRoundPhase(phase: string)
+function setRoundPhase(phase: string)
 	if RuntimeState.RoundPhase ~= phase then
 		RuntimeState.RoundPhase = phase
 		print("[ROUND] phase=" .. phase)
 	end
 end
 
-local function tryStartDungeon(): boolean
+function tryStartDungeon(): boolean
 	local marker, cachedButton = cachedStartScreen()
 	if not marker then
 		return false
@@ -3682,7 +3684,7 @@ local function tryStartDungeon(): boolean
 	end
 	return true
 end
-local function clearAimObjects()
+function clearAimObjects()
 	if Combat.AimAlignment then
 		Combat.AimAlignment:Destroy()
 		Combat.AimAlignment = nil
@@ -3693,7 +3695,7 @@ local function clearAimObjects()
 	end
 end
 
-local function ensureAimObjects()
+function ensureAimObjects()
 	if not Root or Combat.AimAlignment then
 		return
 	end
@@ -3720,7 +3722,7 @@ restoreRotation = function()
 	end
 end
 
-local function faceTarget(enemyRoot: BasePart)
+function faceTarget(enemyRoot: BasePart)
 	if not Root or not Humanoid then
 		return
 	end
@@ -3736,7 +3738,7 @@ local function faceTarget(enemyRoot: BasePart)
 	end
 end
 
-local function updateTargetFacing()
+function updateTargetFacing()
 	if Target and validTarget(Target) then
 		local enemyRoot = getTargetRoot(Target)
 		if enemyRoot then
@@ -3747,7 +3749,7 @@ local function updateTargetFacing()
 	CombatController:restoreRotation()
 end
 
-local function sendKey(key: Enum.KeyCode)
+function sendKey(key: Enum.KeyCode)
 	if not VirtualInputManager then
 		return
 	end
@@ -3757,7 +3759,7 @@ local function sendKey(key: Enum.KeyCode)
 	end)
 end
 
-local function activateSkill(toolName: string, key: Enum.KeyCode, context: string): boolean
+function activateSkill(toolName: string, key: Enum.KeyCode, context: string): boolean
 	local function logBackend(backend: string)
 		local signature = toolName .. ":" .. backend .. ":" .. context
 		local stateKey = "LastSkillBackend_" .. toolName
@@ -3815,11 +3817,11 @@ local function activateSkill(toolName: string, key: Enum.KeyCode, context: strin
 	return false
 end
 
-local function findNearestEnemyInSkillRange(): (Model?, BasePart?, number)
+function findNearestEnemyInSkillRange(): (Model?, BasePart?, number)
 	return TargetingController:findNearestEnemyInSkillRange()
 end
 
-local function useCombatSkills(enemyRoot: BasePart, distance3D: number)
+function useCombatSkills(enemyRoot: BasePart, distance3D: number)
 	local activeSkillRange = Target and skillRangeForTarget(Target) or Config.NormalSkillRange
 	if not Target or not validTarget(Target) or distance3D > activeSkillRange then
 		return
@@ -3841,7 +3843,7 @@ local function useCombatSkills(enemyRoot: BasePart, distance3D: number)
 	end
 end
 
-local function useNormalAttack(distance3D: number)
+function useNormalAttack(distance3D: number)
 	if
 		State == NavigationState.DODGE
 		or not validTarget(Target)
@@ -3869,7 +3871,7 @@ local function useNormalAttack(distance3D: number)
 	end
 end
 
-local function resolvePlayerControls()
+function resolvePlayerControls()
 	if Combat.PlayerControls then
 		return Combat.PlayerControls
 	end
@@ -3889,7 +3891,7 @@ local function resolvePlayerControls()
 	return nil
 end
 
-local function disablePlayerControls()
+function disablePlayerControls()
 	if Combat.PlayerControlsDisabled then
 		return
 	end
@@ -3927,7 +3929,7 @@ local function disablePlayerControls()
 	end
 end
 
-local function enablePlayerControls()
+function enablePlayerControls()
 	if not Combat.PlayerControlsDisabled then
 		return
 	end
@@ -3944,11 +3946,11 @@ local function enablePlayerControls()
 	end
 end
 
-local function applyMovementSpeed()
+function applyMovementSpeed()
 	-- Speed is owned by commandMovement; never alter Humanoid.WalkSpeed.
 end
 
-local function restoreMovementSpeed()
+function restoreMovementSpeed()
 	-- No WalkSpeed snapshot is owned by AutoFarm.
 end
 
@@ -3963,7 +3965,7 @@ end
 stopTranslation = function()
 	MovementController:stopTranslation()
 end
-local function disposePath()
+function disposePath()
 	disconnect(RuntimeState.PathBlockedConnection)
 	RuntimeState.PathBlockedConnection = nil
 	if ActivePath then
@@ -4003,7 +4005,7 @@ setNavigationState = function(newState: string)
 	RuntimeState.ActivityDetail = activeHazard and activeHazard:GetFullName() or ""
 end
 
-local function resetProgress(target: Model?, goal: Vector3?)
+function resetProgress(target: Model?, goal: Vector3?)
 	ProgressTarget = target
 	ProgressGoalAnchor = goal
 	BestGoalMetric = math.huge
@@ -4030,12 +4032,12 @@ pathRemainingMetric = function(): number
 	return metric
 end
 
-local function markMeaningfulProgress()
+function markMeaningfulProgress()
 	LastMeaningfulProgressAt = os.clock()
 	BestGoalMetric = pathRemainingMetric()
 end
 
-local function updateProgressTracking()
+function updateProgressTracking()
 	if not Root or not Target or not NavigationGoal then
 		return
 	end
@@ -4066,7 +4068,7 @@ local function updateProgressTracking()
 	end
 end
 
-local function rayClearance(origin: Vector3, direction: Vector3, target: Model?): number
+function rayClearance(origin: Vector3, direction: Vector3, target: Model?): number
 	local result = workspace:Raycast(
 		origin + Vector3.new(0, 2.5, 0),
 		direction.Unit * Config.DetourProbeDistance,
@@ -4075,7 +4077,7 @@ local function rayClearance(origin: Vector3, direction: Vector3, target: Model?)
 	return result and result.Distance or Config.DetourProbeDistance
 end
 
-local function chooseRecoveryDetour(goal: Vector3, retreat: boolean?): Vector3?
+function chooseRecoveryDetour(goal: Vector3, retreat: boolean?): Vector3?
 	if not Root then
 		return nil
 	end
@@ -4113,13 +4115,13 @@ local function chooseRecoveryDetour(goal: Vector3, retreat: boolean?): Vector3?
 	return bestGoal
 end
 
-local function beginLocalRecovery(goal: Vector3)
+function beginLocalRecovery(goal: Vector3)
 	RecoveryGoal = chooseRecoveryDetour(goal)
 	RecoveryUntil = os.clock() + Config.DetourDuration
 	setNavigationState(NavigationState.RECOVERY)
 end
 
-local function issueCurrentWaypoint()
+function issueCurrentWaypoint()
 	if State ~= NavigationState.PATH or not Humanoid or not Root or not PathWaypoints then
 		return
 	end
@@ -4143,7 +4145,7 @@ local function issueCurrentWaypoint()
 	commandMovement(Vector3.new(waypoint.Position.X - Root.Position.X, 0, waypoint.Position.Z - Root.Position.Z), NavigationState.PATH)
 end
 
-local function requestPath(goal: Vector3): boolean
+function requestPath(goal: Vector3): boolean
 	if not alive() or not Target or PathComputing then
 		return false
 	end
@@ -4207,7 +4209,7 @@ local function requestPath(goal: Vector3): boolean
 	return true
 end
 
-local function updatePathNavigation()
+function updatePathNavigation()
 	if State ~= NavigationState.PATH or not Root or not PathWaypoints then
 		return
 	end
@@ -4253,7 +4255,7 @@ local function updatePathNavigation()
 	end
 end
 
-local function updateDirectMovement()
+function updateDirectMovement()
 	if State ~= NavigationState.DIRECT or not Humanoid or not Root or not NavigationGoal then
 		return
 	end
@@ -4265,7 +4267,7 @@ local function updateDirectMovement()
 	end
 end
 
-local function updateRecoveryMovement()
+function updateRecoveryMovement()
 	if
 		(State ~= NavigationState.RECOVERY and State ~= NavigationState.STEER and State ~= NavigationState.RETREAT)
 		or not Humanoid
@@ -4321,7 +4323,7 @@ local function updateRecoveryMovement()
 	end
 end
 
-local function decideNavigation()
+function decideNavigation()
 	if not alive() or not Target or not NavigationGoal then
 		return
 	end
@@ -4369,7 +4371,7 @@ local function decideNavigation()
 	end
 end
 
-local function resetNavigationForTarget(newTarget: Model?)
+function resetNavigationForTarget(newTarget: Model?)
 	RuntimeState.VerticalPathTarget = nil
 	RuntimeState.VerticalPathGoal = nil
 	if RuntimeState.BossDiedTarget ~= newTarget then
@@ -4410,19 +4412,19 @@ local function resetNavigationForTarget(newTarget: Model?)
 	end
 end
 
-local function clearDodgeObjective()
+function clearDodgeObjective()
 	DodgeController:clearObjective()
 end
 
-local function leaveDodge()
+function leaveDodge()
 	DodgeController:leave()
 end
 
-local function updateDodgeController(): boolean
+function updateDodgeController(): boolean
 	return DodgeController:update()
 end
 
-local function updateDungeonReplayState()
+function LifecycleController:update()
 	local now = os.clock()
 	if now - RuntimeState.LastDungeonStateCheckAt < 0.25 then
 		return
@@ -4531,7 +4533,7 @@ local function updateDungeonReplayState()
 	tryReplayDungeon()
 end
 
-local function updateTargetAndObjective()
+function updateTargetAndObjective()
 	if not Running or not alive() or RuntimeState.RoundPhase ~= "ACTIVE" then
 		return
 	end
@@ -4697,7 +4699,7 @@ local function updateTargetAndObjective()
 	runRecoveryPolicy()
 end
 
-local function bindCharacter(character: Model)
+function bindCharacter(character: Model)
 	RuntimeState.CharacterBindSerial += 1
 	local serial = RuntimeState.CharacterBindSerial
 	local newHumanoid = character:WaitForChild("Humanoid", 8)
@@ -4776,7 +4778,7 @@ setRunning = function(value: boolean)
 	end
 end
 
-local function createObsidianUI()
+function createObsidianUI()
 	if type(loadstring) ~= "function" then
 		warn("[UI] FAIL COMPILE", "loadstring unavailable")
 		return
@@ -4965,7 +4967,7 @@ updateObsidianStatus = function()
 		end
 	end
 end
-local function shutdown()
+function shutdown()
 	Config.FarmEnabled = Running
 	saveConfig()
 	Enabled, Running = false, false
@@ -6055,6 +6057,7 @@ local function runNode(node)
 	}, {
 		__index = getfenv(),
 	})
+
 	setfenv(chunk, environment)
 
 	local ok, result = xpcall(chunk, debug.traceback)
