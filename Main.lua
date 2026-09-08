@@ -47,6 +47,7 @@ print("[BOOT] startup begin")
 
 print("[BOOT2] CONFIG")
 local ConfigStore = require(script.Parent.Systems.ConfigStore)
+local SkillFXSystem = require(script.Parent.Systems.SkillFX)
 
 local NavigationState = {
 	IDLE = "IDLE",
@@ -126,13 +127,13 @@ local LastMeaningfulProgressAt = os.clock()
 local LastProgressCheckAt = 0
 
 local Combat = {
-	Combat.LastAttack = 0,
-	Combat.NextQAt = 0,
-	Combat.NextEAt = 0,
-	Combat.AimAttachment = nil :: Attachment?,
-	Combat.AimAlignment = nil :: AlignOrientation?,
-	Combat.PlayerControls = nil,
-	Combat.PlayerControlsDisabled = false,
+	LastAttack = 0,
+	NextQAt = 0,
+	NextEAt = 0,
+	AimAttachment = nil :: Attachment?,
+	AimAlignment = nil :: AlignOrientation?,
+	PlayerControls = nil,
+	PlayerControlsDisabled = false,
 }
 
 local EnemySet: { [Model]: boolean } = {}
@@ -159,6 +160,8 @@ local ExploredCells: { [string]: boolean } = {}
 local ExploredCellOrder: { string } = {}
 local LastTelemetry: { [string]: string } = {}
 RuntimeState = require(script.Parent.Runtime).create(SkillFX)
+local ActiveSkillModels = RuntimeState.ActiveSkillModels
+local ActiveSkillHitboxes = RuntimeState.ActiveSkillHitboxes
 
 print("[BOOT3] RUNTIME")
 
@@ -289,6 +292,8 @@ end
 
 local normalizeTargetName
 local isInsideAnyEnemyFolder
+local hazardNameHint
+local SkillFXController
 
 local function isBossTarget(model: Model): boolean
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
@@ -337,6 +342,19 @@ end
 normalizeTargetName = function(value: string): string
 	return value:lower():gsub("[%s%p_]", "")
 end
+
+SkillFXController = SkillFXSystem.new({
+	Config = Config,
+	Models = ActiveSkillModels,
+	Hitboxes = ActiveSkillHitboxes,
+	NormalizeTargetName = normalizeTargetName,
+	GetCharacter = function()
+		return Character
+	end,
+	NameHint = function(part: BasePart)
+		return hazardNameHint(part)
+	end,
+})
 
 isInsideAnyEnemyFolder = function(model: Model): boolean
 	local current: Instance? = model.Parent
@@ -443,7 +461,7 @@ local function hasGroundSupport(position: Vector3, target: Model?): boolean
 	return workspace:Raycast(origin, Vector3.new(0, -Config.GroundSupportDepth, 0), makeRaycastParams(target)) ~= nil
 end
 
-local function hazardNameHint(part: BasePart): boolean
+hazardNameHint = function(part: BasePart): boolean
 	local current: Instance? = part
 	while current and current ~= workspace do
 		local lowerName = current.Name:lower()
@@ -477,92 +495,17 @@ local function isHazardCandidate(part: BasePart): boolean
 end
 
 local function isActiveHazardPart(part: BasePart): boolean
-	if not part:IsDescendantOf(workspace) or (Character and part:IsDescendantOf(Character)) then
-		return false
-	end
-	if part.Transparency >= 0.98 then
-		return false
-	end
-	local dimensions = { part.Size.X, part.Size.Y, part.Size.Z }
-	table.sort(dimensions)
-	local thinAxis = dimensions[1]
-	local middleAxis = dimensions[2]
-	local longAxis = dimensions[3]
-	local namedTelegraph = hazardNameHint(part)
-	local pillarLike = longAxis >= math.max(10, middleAxis * 2.5)
-		and middleAxis <= math.max(8, thinAxis * 2.5)
-	if pillarLike and not namedTelegraph then
-		return false
-	end
-	local broadAndThin = thinAxis <= 5 and middleAxis >= 5 and longAxis >= 5 and longAxis <= middleAxis * 2.5
-	local floorCylinder = part:IsA("Part") and part.Shape == Enum.PartType.Cylinder and not pillarLike
-	return namedTelegraph or broadAndThin or floorCylinder
+	return SkillFXController:isActiveHazardPart(part)
 end
 
 local hazardThreatensHeight
-local function skillPartKind(instance: Instance): string?
-	local name = normalizeTargetName(instance.Name)
-	if name == "hitbox" or name == "damagebox" or name == "damagepart" then
-		return "hitbox"
-	end
-	if name == "aoe" or name == "indicator" then
-		return "precast"
-	end
-	if name == "precast" then
-		return "precast"
-	end
-	return nil
-end
 
 local function registerSkillModel(model: Model)
-	if not model:IsDescendantOf(workspace) or Character and model == Character then
-		return
-	end
-	local hitboxes: { [BasePart]: boolean } = {}
-	local precasts: { [BasePart]: boolean } = {}
-	for _, child in ipairs(model:GetChildren()) do
-		local kind = skillPartKind(child)
-		if kind and child:IsA("BasePart") then
-			if kind == "hitbox" then
-				hitboxes[child] = true
-				ActiveSkillHitboxes[child] = true
-			else
-				precasts[child] = true
-				ActiveSkillHitboxes[child] = true
-			end
-		end
-	end
-	if next(hitboxes) or next(precasts) then
-		local now = os.clock()
-		local previous = ActiveSkillModels[model]
-		if previous then
-			for part in pairs(previous.Hitboxes) do ActiveSkillHitboxes[part] = nil end
-			for part in pairs(previous.Precasts) do ActiveSkillHitboxes[part] = nil end
-		end
-		ActiveSkillModels[model] = {
-			Model = model,
-			SpawnedAt = ActiveSkillModels[model] and ActiveSkillModels[model].SpawnedAt or now,
-			Hitboxes = hitboxes,
-			Precasts = precasts,
-			LastSeenAt = now,
-		}
-		if Config.DebugHazards then
-			print("[SKILLFX] NEW " .. model:GetFullName())
-		end
-	end
+	SkillFXController:registerModel(model)
 end
 
 local function unregisterSkillModel(model: Model)
-	local skill = ActiveSkillModels[model]
-	if not skill then
-		return
-	end
-	for part in pairs(skill.Hitboxes) do ActiveSkillHitboxes[part] = nil end
-	for part in pairs(skill.Precasts) do ActiveSkillHitboxes[part] = nil end
-	ActiveSkillModels[model] = nil
-	if Config.DebugHazards then
-		print("[SKILLFX] REMOVE " .. model.Name)
-	end
+	SkillFXController:unregisterModel(model)
 end
 
 local function skillPartThreatens(part: BasePart, position: Vector3, padding: number): boolean
