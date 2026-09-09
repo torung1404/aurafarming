@@ -3,6 +3,8 @@ local Defaults = require(script.Parent.Parent.Config)
 local Store = {}
 local FILE_NAME = "AutoFarmV21Config.json"
 local NUMERIC_OR_BOOLEAN_KEYS = {
+    "AutoReplay",
+    "AutoStart",
     "FarmRange",
     "DodgeEnabled",
     "DodgeDetectionRadius",
@@ -71,22 +73,22 @@ function Store.load(httpService, environment)
             config[key] = tonumber(saved[key])
         end
     end
+	if type(saved.WebhookURL) == "string" then
+		config.WebhookURL = saved.WebhookURL
+	end
 
     config.RespawnStuckTime = 30
     config.TargetWalkSpeed = 23
     config.MovementSpeedMultiplier = Defaults.MovementSpeedMultiplier
     config.ApproachDistance = nil
-    config.AutoReplay = true
     config.KiteDistance = 70
     config.SkillRange = nil
     config.UseTool = false
-    config.WebhookEnabled = true
-    config.FarmRange = tonumber(saved.FarmRange) or tonumber(config.FarmRange) or 700
+	config.FarmRange = tonumber(saved.FarmRange) or tonumber(config.FarmRange) or 700
     if type(saved.FarmEnabled) == "boolean" then
         config.FarmEnabled = saved.FarmEnabled
     end
 
-    config.AutoStart = true
     config.CombatDistance = nil
     config.RetreatDistance = nil
     config.StuckDistance = nil

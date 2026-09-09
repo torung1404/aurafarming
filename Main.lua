@@ -181,6 +181,7 @@ local commandMovement
 local releaseMovement
 local stopTranslation
 local resetRuntimeForNewDungeon
+local clearDodgeObjective
 local getTargetRoot
 local cancelPathRequest
 local pathRemainingMetric
@@ -963,6 +964,9 @@ DungeonResolver = DungeonResolverModule.new({
 	RegisterEnemy = registerEnemy,
 	RegisterSkillModel = registerSkillModel,
 	UnregisterSkillModel = unregisterSkillModel,
+	IsPlayerCharacter = function(model: Model)
+		return model == Character or Players:GetPlayerFromCharacter(model) ~= nil
+	end,
 })
 
 TimerResolver = TimerResolverModule.new({
@@ -1021,6 +1025,7 @@ ObsidianUI = ObsidianUIModule.new({
 	GetRoot = function() return Root end,
 	GetTargetRoot = getTargetRoot,
 	GetNavigationState = function() return MovementController.State or State end,
+	GetActiveHazard = function() return DodgeController:getActiveHazard() end,
 	NavigationState = NavigationState,
 	GetRemainingDungeonTime = function()
 		if TimerResolver and TimerResolver.getRemainingTime then
@@ -1224,8 +1229,15 @@ local function findStartMarker(): GuiObject?
 				if text and normalizeStartText(text) == "start" then
 					return object
 				end
-				if not nameFallback and normalizeStartText(object.Name):find("start", 1, true) then
-					nameFallback = object
+				if not nameFallback then
+					local normalizedName = normalizeStartText(object.Name)
+					if normalizedName == "start"
+						or normalizedName == "startbutton"
+						or normalizedName == "startlabel"
+						or normalizedName == "startimage"
+					then
+						nameFallback = object
+					end
 				end
 			end
 		end
@@ -1959,23 +1971,27 @@ local function updateRecoveryMovement()
 		if enemyRoot then
 			local away = Vector3.new(Root.Position.X - enemyRoot.Position.X, 0, Root.Position.Z - enemyRoot.Position.Z)
 			local backward = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
-			local side = Vector3.new(-backward.Z, 0, backward.X) * (RuntimeState.RetreatSide or 1)
-			local direction = (backward + side).Unit
-			local retreatPoint, foundGround = projectToWalkableGround(Root.Position + direction * 7, Target)
-			if
-				foundGround
-				and math.abs(retreatPoint.Y - Root.Position.Y) <= Config.DirectVerticalTolerance
-				and hasGroundSupport(retreatPoint, Target)
-				and directRouteClear(retreatPoint, Target)
-				and pointIsSafeFromHazards(retreatPoint)
-			then
-				commandMovement(direction, false)
-			else
-				RuntimeState.RetreatSide = -(RuntimeState.RetreatSide or 1)
-				RuntimeState.RetreatSideUntil = os.clock() + 0.75
-				local alternate = (backward + side * -1).Unit
-				commandMovement(alternate, false)
+			local function retreatRoute(sideSign: number): (Vector3, boolean)
+				local side = Vector3.new(-backward.Z, 0, backward.X) * sideSign
+				local direction = (backward + side).Unit
+				local point, found = projectToWalkableGround(Root.Position + direction * 7, Target)
+				return direction, found
+					and math.abs(point.Y - Root.Position.Y) <= Config.DirectVerticalTolerance
+					and hasGroundSupport(point, Target)
+					and directRouteClear(point, Target)
+					and pointIsSafeFromHazards(point)
 			end
+			local sideSign = RuntimeState.RetreatSide or 1
+			local direction, routeClear = retreatRoute(sideSign)
+			if not routeClear then
+				local alternate, alternateClear = retreatRoute(-sideSign)
+				if alternateClear then
+					RuntimeState.RetreatSide = -sideSign
+					RuntimeState.RetreatSideUntil = os.clock() + 0.75
+					direction, routeClear = alternate, true
+				end
+			end
+			commandMovement(routeClear and direction or Vector3.zero, false)
 			return
 		end
 	end
@@ -2057,6 +2073,7 @@ local function decideNavigation()
 end
 
 local function resetNavigationForTarget(newTarget: Model?)
+	local previousTarget = Target
 	RuntimeState.VerticalPathTarget = nil
 	RuntimeState.VerticalPathGoal = nil
 	if RuntimeState.BossDiedTarget ~= newTarget then
@@ -2067,6 +2084,9 @@ local function resetNavigationForTarget(newTarget: Model?)
 		RuntimeState.BossDiedTarget = nil
 	end
 	Target = newTarget
+	if previousTarget ~= newTarget then
+		print("[TARGET] selected=" .. (newTarget and newTarget:GetFullName() or "nil"))
+	end
 	clearExploreObjective()
 	if newTarget then
 		telemetry("EXPLORE_TARGET", "target=" .. newTarget:GetFullName())
@@ -2097,7 +2117,49 @@ local function resetNavigationForTarget(newTarget: Model?)
 	end
 end
 
-local function clearDodgeObjective()
+resetRuntimeForNewDungeon = function()
+	if ResetExecuting then
+		return
+	end
+	ResetExecuting = true
+	cancelPathRequest()
+	clearDodgeObjective()
+	resetNavigationForTarget(nil)
+	TargetingController:clear()
+	disconnectAll(DungeonConnections)
+	table.clear(RuntimeState.EnemyCandidates)
+	table.clear(RuntimeState.EnemyFolders)
+	table.clear(RuntimeState.DummyCache)
+	RuntimeState.ActiveDungeonRoot = nil
+	RuntimeState.DungeonIdentity = nil
+	RuntimeState.EnemyFolderInstance = nil
+	RuntimeState.FightingBossInstance = nil
+	RuntimeState.DungeonFinishedInstance = nil
+	RuntimeState.DungeonTimeInstance = nil
+	RuntimeState.DungeonTimeText = nil
+	RuntimeState.DungeonBootstrapped = false
+	RuntimeState.DungeonCacheDirty = true
+	RuntimeState.LastDungeonReferenceSearchAt = -math.huge
+	RuntimeState.LastDungeonStateCheckAt = 0
+	RuntimeState.LastFallbackTargetScanAt = -math.huge
+	RuntimeState.LastTargetDecisionAt = -math.huge
+	RuntimeState.DungeonFinishedLastState = false
+	RuntimeState.PreviousDungeonFinishedInstance = nil
+	RuntimeState.ReplayDungeonIdentity = nil
+	RuntimeState.ReplayCompletionDetected = false
+	RuntimeState.ReplayResultScanDirty = true
+	setReplayPhase("IDLE")
+	setRoundPhase("UNKNOWN")
+	stopTranslation()
+	ResetExecuting = false
+	task.defer(function()
+		if Enabled and DungeonResolver then
+			DungeonResolver:refresh()
+		end
+	end)
+end
+
+clearDodgeObjective = function()
 	DodgeController:clearObjective()
 end
 

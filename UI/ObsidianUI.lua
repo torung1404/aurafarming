@@ -43,15 +43,27 @@ function ObsidianUI:create()
 
 	local farmTab = window:AddTab("FARM", "bot")
 	local movementTab = window:AddTab("MOVEMENT", "move")
+	local combatTab = window:AddTab("COMBAT", "swords")
+	local dodgeTab = window:AddTab("DODGE", "shield")
+	local webhookTab = window:AddTab("WEBHOOK", "send")
 	local statusTab = window:AddTab("STATUS", "activity")
-	local settingsTab = window:AddTab("SETTINGS", "settings")
 
-	local farmGroup = farmTab:AddGroupbox({ Side = "Left", Name = "Automation" })
+	local farmGroup = farmTab:AddGroupbox({ Side = "Left", Name = "Farm" })
 	local movementGroup = movementTab:AddGroupbox({ Side = "Left", Name = "Movement" })
-	local statusGroup = statusTab:AddGroupbox({ Side = "Left", Name = "Status" })
-	local settingsDodge = settingsTab:AddGroupbox({ Side = "Left", Name = "Dodge" })
-	local settingsCombat = settingsTab:AddGroupbox({ Side = "Right", Name = "Combat" })
-	local settingsNavigation = settingsTab:AddGroupbox({ Side = "Left", Name = "Navigation" })
+	local combatGroup = combatTab:AddGroupbox({ Side = "Left", Name = "Combat" })
+	local dodgeGroup = dodgeTab:AddGroupbox({ Side = "Left", Name = "Dodge" })
+	local webhookGroup = webhookTab:AddGroupbox({ Side = "Left", Name = "Webhook" })
+	local statusGroup = statusTab:AddGroupbox({ Side = "Left", Name = "Runtime Status" })
+	local saveGeneration = 0
+	local function queueSave()
+		saveGeneration += 1
+		local generation = saveGeneration
+		task.delay(0.5, function()
+			if generation == saveGeneration then
+				ctx.SaveConfig()
+			end
+		end)
+	end
 
 	farmGroup:AddToggle("AutoFarm", {
 		Text = "Auto Farm",
@@ -76,15 +88,105 @@ function ObsidianUI:create()
 		ctx.SaveConfig()
 	end)
 
-	movementGroup:AddLabel("Walk Speed: 23 studs/s")
+	farmGroup:AddSlider("FarmRange", {
+		Text = "Farm Range",
+		Default = ctx.Config.FarmRange,
+		Min = 100,
+		Max = 1500,
+		Rounding = 0,
+	}):OnChanged(function(value)
+		ctx.Config.FarmRange = value
+		queueSave()
+	end)
 
-	settingsDodge:AddToggle("DodgeEnabled", {
+	movementGroup:AddToggle("SpeedBoostEnabled", {
+		Text = "Speed Boost",
+		Default = ctx.Config.SpeedBoostEnabled,
+	}):OnChanged(function(value)
+		ctx.Config.SpeedBoostEnabled = value
+		ctx.SaveConfig()
+	end)
+	movementGroup:AddSlider("SpeedValue", {
+		Text = "Speed",
+		Default = ctx.Config.SpeedValue,
+		Min = 20,
+		Max = 100,
+		Rounding = 0,
+	}):OnChanged(function(value)
+		ctx.Config.SpeedValue = value
+		queueSave()
+	end)
+	for _, spec in ipairs({
+		{ "PreferredCombatDistance", "Preferred Combat Distance", 10, 150 },
+		{ "RetreatEnterDistance", "Retreat Enter", 5, 140 },
+		{ "RetreatExitDistance", "Retreat Exit", 10, 160 },
+	}) do
+		movementGroup:AddSlider(spec[1], {
+			Text = spec[2],
+			Default = ctx.Config[spec[1]],
+			Min = spec[3],
+			Max = spec[4],
+			Rounding = 0,
+		}):OnChanged(function(value)
+			ctx.Config[spec[1]] = value
+			queueSave()
+		end)
+	end
+
+	for _, spec in ipairs({
+		{ "NormalSkillRange", "Normal Skill Range", 10, 150 },
+		{ "BossSkillRange", "Boss Skill Range", 10, 200 },
+		{ "AttackRange", "Attack Range", 5, 50 },
+	}) do
+		combatGroup:AddSlider(spec[1], {
+			Text = spec[2],
+			Default = ctx.Config[spec[1]],
+			Min = spec[3],
+			Max = spec[4],
+			Rounding = 0,
+		}):OnChanged(function(value)
+			ctx.Config[spec[1]] = value
+			queueSave()
+		end)
+	end
+
+	dodgeGroup:AddToggle("DodgeEnabled", {
 		Text = "Dodge Enabled",
 		Default = ctx.Config.DodgeEnabled,
 	}):OnChanged(function(value)
 		ctx.Config.DodgeEnabled = value
 		ctx.SaveConfig()
 	end)
+
+	webhookGroup:AddToggle("WebhookEnabled", {
+		Text = "Enabled",
+		Default = ctx.Config.WebhookEnabled,
+	}):OnChanged(function(value)
+		ctx.Config.WebhookEnabled = value
+		ctx.SaveConfig()
+	end)
+	webhookGroup:AddInput("WebhookURL", {
+		Text = "URL",
+		Default = ctx.Config.WebhookURL,
+		Numeric = false,
+		Finished = true,
+	}):OnChanged(function(value)
+		ctx.Config.WebhookURL = value
+		ctx.SaveConfig()
+	end)
+	for _, spec in ipairs({
+		{ "WebhookPingEveryone", "Ping Everyone" },
+		{ "WebhookPingLegend", "Ping Legend" },
+		{ "WebhookPingUltimate", "Ping Ultimate" },
+	}) do
+		webhookGroup:AddToggle(spec[1], {
+			Text = spec[2],
+			Default = ctx.Config[spec[1]],
+		}):OnChanged(function(value)
+			ctx.Config[spec[1]] = value
+			ctx.SaveConfig()
+		end)
+	end
 
 	local labels = ctx.Runtime.ObsidianLabels
 	labels.Round = statusGroup:AddLabel("Round: --")
@@ -121,6 +223,8 @@ function ObsidianUI:update()
 		and string.format("%02d:%02d", math.floor(timer / 60), math.floor(timer % 60))
 		or "--"
 	local graceRemaining = math.max(0, runtime.RespawnGraceUntil - os.clock())
+	local activeHazard = ctx.GetActiveHazard and ctx.GetActiveHazard() or nil
+	local hazardName = activeHazard and activeHazard:IsDescendantOf(workspace) and activeHazard.Name or "None"
 
 	local values = {
 		Round = "Round: " .. tostring(runtime.RoundPhase),
@@ -140,6 +244,7 @@ function ObsidianUI:update()
 		Grace = graceRemaining > 0
 			and string.format("Respawn Grace: %.1fs", graceRemaining)
 			or "Respawn Grace: OFF",
+		Hazard = "Current Hazard: " .. hazardName,
 	}
 
 	for key, value in pairs(values) do

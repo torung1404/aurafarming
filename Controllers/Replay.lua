@@ -65,9 +65,9 @@ function Replay:findButton(): GuiButton?
 	return nil
 end
 
-function Replay:clickButton(button: GuiButton)
+function Replay:clickButton(button: GuiButton): boolean
 	if not self.VirtualInputManager then
-		return
+		return false
 	end
 	local position = button.AbsolutePosition + button.AbsoluteSize * 0.5
 	local inset = select(1, self.GuiService:GetGuiInset())
@@ -75,13 +75,14 @@ function Replay:clickButton(button: GuiButton)
 	if not screenGui or not screenGui.IgnoreGuiInset then
 		position += inset
 	end
-	pcall(function()
+	local issued = pcall(function()
 		self.VirtualInputManager:SendMouseMoveEvent(position.X, position.Y, game)
 		self.VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, true, game, 0)
 		task.delay(0.04, function()
 			self.VirtualInputManager:SendMouseButtonEvent(position.X, position.Y, 0, false, game, 0)
 		end)
 	end)
+	return issued
 end
 
 function Replay:setPhase(phase: string)
@@ -149,8 +150,9 @@ function Replay:tryReplayDungeon()
 	if not self.isRunning() or not self.Config.AutoReplay then return end
 	local phase = runtime.ReplayPhase
 	local phaseAge = now - runtime.ReplayPhaseEnteredAt
-	if runtime.ReplayResultScanDirty or phase ~= "IDLE" then
+	if runtime.ReplayResultScanDirty or (phase ~= "IDLE" and now - runtime.ReplayLastGuiScanAt >= 0.5) then
 		runtime.ReplayResultScanDirty = false
+		runtime.ReplayLastGuiScanAt = now
 		local result = self:findResult()
 		if result then
 			runtime.ReplayCompletionRoot = result
@@ -184,7 +186,8 @@ function Replay:tryReplayDungeon()
 		if not opener or not opener:IsDescendantOf(game) or not self.visibleGui(opener) then opener = self:findOpener(); runtime.ReplayOpener = opener end
 		if opener and now - runtime.ReplayLastActionAt >= 0.75 then
 			print("[REPLAY] click opener")
-			self:clickButton(opener)
+			local issued = self:clickButton(opener)
+			print("[REPLAY] click=" .. (issued and "PASS" or "FAIL"))
 			runtime.ReplayLastActionAt = now
 			runtime.ReplayRetries += 1
 			self:setPhase("OPENING")
@@ -197,7 +200,8 @@ function Replay:tryReplayDungeon()
 	if not yes or not yes:IsDescendantOf(game) or not self.visibleGui(yes) then yes = self:findButton(); runtime.ReplayYesButton = yes end
 	if yes and now - runtime.ReplayLastActionAt >= 0.75 then
 		print("[REPLAY] click yes")
-		self:clickButton(yes)
+		local issued = self:clickButton(yes)
+		print("[REPLAY] click=" .. (issued and "PASS" or "FAIL"))
 		runtime.ReplayAwaitingClose = yes
 		runtime.ReplayLastActionAt = now
 		runtime.ReplayRetries += 1

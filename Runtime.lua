@@ -24,6 +24,7 @@ local state = {
 	ReplayLastGuiScanAt = -math.huge,
 	ReplayOpenerMissingReported = false,
 	ReplayCompletionDetected = false,
+	ReplayDungeonIdentity = nil :: Instance?,
 	BossDiedConnection = nil :: RBXScriptConnection?,
 	BossDiedTarget = nil :: Model?,
 	StartDebugMarker = nil :: GuiObject?,
@@ -90,6 +91,8 @@ local state = {
 	LastGoalRefreshAt = 0,
 	LastDodgeGoalAttemptAt = -math.huge,
 	LastHazardRefreshAt = -math.huge,
+	RetreatSide = 1,
+	RetreatSideUntil = 0,
 }
 
 	return state

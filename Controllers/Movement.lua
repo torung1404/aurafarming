@@ -503,23 +503,27 @@ function Movement:updateRecoveryMovement()
 		if enemyRoot then
 			local away = Vector3.new(root.Position.X - enemyRoot.Position.X, 0, root.Position.Z - enemyRoot.Position.Z)
 			local backward = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
-			local sideSign = self.RuntimeState.RetreatSide or 1
-			local side = Vector3.new(-backward.Z, 0, backward.X) * sideSign
-			local direction = (backward + side).Unit
-			local retreatPoint, foundGround = self:projectToWalkableGround(root.Position + direction * 7, target)
-			if
-				foundGround
-				and math.abs(retreatPoint.Y - root.Position.Y) <= self.Config.DirectVerticalTolerance
-				and self:hasGroundSupport(retreatPoint, target)
-				and self:directRouteClear(retreatPoint, target)
-				and self.pointIsSafeFromHazards(retreatPoint)
-			then
-				self:commandMovement(direction, false)
-			else
-				self.RuntimeState.RetreatSide = -sideSign
-				self.RuntimeState.RetreatSideUntil = os.clock() + 0.75
-				self:commandMovement((backward - side).Unit, false)
+			local function retreatRoute(sideSign: number): (Vector3, boolean)
+				local side = Vector3.new(-backward.Z, 0, backward.X) * sideSign
+				local direction = (backward + side).Unit
+				local point, found = self:projectToWalkableGround(root.Position + direction * 7, target)
+				return direction, found
+					and math.abs(point.Y - root.Position.Y) <= self.Config.DirectVerticalTolerance
+					and self:hasGroundSupport(point, target)
+					and self:directRouteClear(point, target)
+					and self.pointIsSafeFromHazards(point)
 			end
+			local sideSign = self.RuntimeState.RetreatSide or 1
+			local direction, routeClear = retreatRoute(sideSign)
+			if not routeClear then
+				local alternate, alternateClear = retreatRoute(-sideSign)
+				if alternateClear then
+					self.RuntimeState.RetreatSide = -sideSign
+					self.RuntimeState.RetreatSideUntil = os.clock() + 0.75
+					direction, routeClear = alternate, true
+				end
+			end
+			self:commandMovement(routeClear and direction or Vector3.zero, false)
 			return
 		end
 	end

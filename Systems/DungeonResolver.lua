@@ -26,6 +26,11 @@ function DungeonResolver:bootstrap(root: Instance)
 		if name == "enemyfolder" and (object:IsA("Folder") or object:IsA("Model")) then
 			runtime.EnemyFolders[object] = true
 			runtime.EnemyFolderInstance = runtime.EnemyFolderInstance or object
+			local folderPath = runtime.EnemyFolderInstance:GetFullName()
+			if runtime.DebugEnemyFolder ~= folderPath then
+				runtime.DebugEnemyFolder = folderPath
+				print("[DUNGEON] enemyFolder=" .. folderPath)
+			end
 		elseif name == "fightingboss" and object:IsA("BoolValue") then
 			runtime.FightingBossInstance = object
 		elseif name == "dungeonfinished" and object:IsA("BoolValue") then
@@ -118,6 +123,11 @@ function DungeonResolver:refresh()
 	if activeRoot and activeRoot:IsDescendantOf(workspace) then
 		return
 	end
+	local now = os.clock()
+	if now - runtime.LastDungeonReferenceSearchAt < 1 then
+		return
+	end
+	runtime.LastDungeonReferenceSearchAt = now
 
 	runtime.ActiveDungeonRoot = nil
 	runtime.DungeonIdentity = nil
@@ -140,10 +150,15 @@ function DungeonResolver:refresh()
 				elseif name == "dungeonfinished" then 3
 				elseif name == "timeleft" then 2
 				elseif name == "fightingboss" then 1
+				elseif object:IsA("Humanoid")
+					and object.Health > 0
+					and object.Parent
+					and object.Parent:IsA("Model")
+					and not ctx.IsPlayerCharacter(object.Parent) then 2
 				else 0
 
 			if weight > 0 then
-				local current: Instance? = object.Parent
+				local current: Instance? = if object:IsA("Humanoid") then object.Parent.Parent else object.Parent
 				local depth = 0
 				while current and current ~= workspace and depth < 8 do
 					if current:IsA("Folder") or current:IsA("Model") then

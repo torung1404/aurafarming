@@ -29,23 +29,33 @@ function Lifecycle:update()
 		ctx.TryStartDungeon()
 		return
 	end
+	local remaining = ctx.GetRemainingDungeonTime()
 
 	local function hasActiveRoundEvidence(): boolean
 		local root = runtime.ActiveDungeonRoot
-		if not root or not root:IsDescendantOf(workspace) then
-			return false
-		end
-
-		local timer = runtime.DungeonTimeInstance
-		if timer and timer:IsDescendantOf(root) then
+		if remaining ~= nil then
 			return true
 		end
-		if runtime.EnemyFolderInstance and runtime.EnemyFolderInstance:IsDescendantOf(root) then
+		if runtime.FightingBossInstance and runtime.FightingBossInstance:IsDescendantOf(workspace) then
 			return true
+		end
+		if root and root:IsDescendantOf(workspace) then
+			local timer = runtime.DungeonTimeInstance
+			if timer and timer:IsDescendantOf(root) then
+				return true
+			end
+			if runtime.EnemyFolderInstance and runtime.EnemyFolderInstance:IsDescendantOf(root) then
+				return true
+			end
 		end
 
 		for model in pairs(ctx.EnemySet) do
-			if ctx.IsValidCombatTarget(model) and model:IsDescendantOf(root) then
+			if ctx.IsValidCombatTarget(model) and (not root or model:IsDescendantOf(root)) then
+				return true
+			end
+		end
+		for model in pairs(runtime.EnemyCandidates) do
+			if ctx.IsValidCombatTarget(model) and (not root or model:IsDescendantOf(root)) then
 				return true
 			end
 		end
@@ -118,7 +128,10 @@ function Lifecycle:update()
 	end
 
 	if runtime.RoundPhase == "WAIT_NEW_ROUND" then
-		if hasActiveRoundEvidence() then
+		if runtime.DungeonIdentity ~= nil
+			and runtime.DungeonIdentity ~= runtime.ReplayDungeonIdentity
+			and hasActiveRoundEvidence()
+		then
 			ctx.ResetRuntimeForNewDungeon()
 		end
 		return
@@ -128,7 +141,6 @@ function Lifecycle:update()
 		self:setRoundPhase("ACTIVE")
 	end
 
-	local remaining = ctx.GetRemainingDungeonTime()
 	if runtime.RoundPhase == "ACTIVE" and remaining and remaining <= 20 then
 		ctx.ArmReplayToken("remaining=" .. tostring(remaining))
 	end
