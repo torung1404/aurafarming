@@ -502,17 +502,23 @@ function Movement:updateRecoveryMovement()
 		local enemyRoot = self.getTargetRoot(target)
 		if enemyRoot then
 			local away = Vector3.new(root.Position.X - enemyRoot.Position.X, 0, root.Position.Z - enemyRoot.Position.Z)
-			local direction = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
+			local backward = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
+			local sideSign = self.RuntimeState.RetreatSide or 1
+			local side = Vector3.new(-backward.Z, 0, backward.X) * sideSign
+			local direction = (backward + side).Unit
 			local retreatPoint, foundGround = self:projectToWalkableGround(root.Position + direction * 7, target)
 			if
 				foundGround
 				and math.abs(retreatPoint.Y - root.Position.Y) <= self.Config.DirectVerticalTolerance
 				and self:hasGroundSupport(retreatPoint, target)
 				and self:directRouteClear(retreatPoint, target)
+				and self.pointIsSafeFromHazards(retreatPoint)
 			then
 				self:commandMovement(direction, false)
 			else
-				self:commandMovement(Vector3.zero, false)
+				self.RuntimeState.RetreatSide = -sideSign
+				self.RuntimeState.RetreatSideUntil = os.clock() + 0.75
+				self:commandMovement((backward - side).Unit, false)
 			end
 			return
 		end
@@ -914,9 +920,9 @@ function Movement:commandMovement(direction: Vector3, _owner: string?)
 		self:releaseMovement()
 		return
 	end
-	if self.Config.SpeedEnabled then
+	if self.Config.SpeedBoostEnabled then
 		local velocity = root.AssemblyLinearVelocity
-		root.AssemblyLinearVelocity = Vector3.new(flat.Unit.X * self.Config.MoveSpeed, velocity.Y, flat.Unit.Z * self.Config.MoveSpeed)
+		root.AssemblyLinearVelocity = Vector3.new(flat.Unit.X * self.Config.SpeedValue, velocity.Y, flat.Unit.Z * self.Config.SpeedValue)
 		self.RuntimeState.VelocityOwned = true
 	else
 		humanoid:Move(flat.Unit, false)
@@ -930,7 +936,7 @@ function Movement:releaseMovement()
 		local velocity = root.AssemblyLinearVelocity
 		root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
 		self.RuntimeState.VelocityOwned = false
-	elseif humanoid and not self.Config.SpeedEnabled then
+	elseif humanoid and not self.Config.SpeedBoostEnabled then
 		humanoid:Move(Vector3.zero, false)
 	end
 end

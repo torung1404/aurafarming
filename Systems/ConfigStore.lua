@@ -19,6 +19,12 @@ local NUMERIC_OR_BOOLEAN_KEYS = {
     "AttackRange",
     "ExploreStartDelay",
     "PathRebuildCooldown",
+    "SpeedBoostEnabled",
+    "SpeedValue",
+    "WebhookEnabled",
+    "WebhookPingEveryone",
+    "WebhookPingLegend",
+    "WebhookPingUltimate",
 }
 
 local function clone(value)
@@ -125,8 +131,13 @@ function Store.save(httpService, config)
                 BossSkillRange = config.BossSkillRange,
                 ExploreStartDelay = config.ExploreStartDelay,
                 PathRebuildCooldown = config.PathRebuildCooldown,
-                SpeedEnabled = config.SpeedEnabled == true,
-                MoveSpeed = config.MoveSpeed,
+                SpeedBoostEnabled = config.SpeedBoostEnabled == true,
+                SpeedValue = config.SpeedValue,
+                WebhookEnabled = config.WebhookEnabled == true,
+                WebhookURL = config.WebhookURL,
+                WebhookPingEveryone = config.WebhookPingEveryone == true,
+                WebhookPingLegend = config.WebhookPingLegend == true,
+                WebhookPingUltimate = config.WebhookPingUltimate == true,
             })
         )
     end)

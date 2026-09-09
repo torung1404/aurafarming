@@ -214,10 +214,7 @@ RuntimeState.sendStatusWebhook = function(event: string)
 	if now - (RuntimeState.WebhookLastByEvent[event] or -math.huge) < 2 then
 		return
 	end
-	local requester = if type(request) == "function"
-		then request
-		elseif type(http_request) == "function" then http_request
-		else nil
+	local requester = if type(request) == "function" then request else nil
 	if type(requester) ~= "function" then
 		return
 	end
@@ -1934,17 +1931,23 @@ local function updateRecoveryMovement()
 		local enemyRoot = getTargetRoot(Target)
 		if enemyRoot then
 			local away = Vector3.new(Root.Position.X - enemyRoot.Position.X, 0, Root.Position.Z - enemyRoot.Position.Z)
-			local direction = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
+			local backward = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
+			local side = Vector3.new(-backward.Z, 0, backward.X) * (RuntimeState.RetreatSide or 1)
+			local direction = (backward + side).Unit
 			local retreatPoint, foundGround = projectToWalkableGround(Root.Position + direction * 7, Target)
 			if
 				foundGround
 				and math.abs(retreatPoint.Y - Root.Position.Y) <= Config.DirectVerticalTolerance
 				and hasGroundSupport(retreatPoint, Target)
 				and directRouteClear(retreatPoint, Target)
+				and pointIsSafeFromHazards(retreatPoint)
 			then
 				commandMovement(direction, false)
 			else
-				commandMovement(Vector3.zero, false)
+				RuntimeState.RetreatSide = -(RuntimeState.RetreatSide or 1)
+				RuntimeState.RetreatSideUntil = os.clock() + 0.75
+				local alternate = (backward + side * -1).Unit
+				commandMovement(alternate, false)
 			end
 			return
 		end
@@ -2294,6 +2297,10 @@ local function updateTargetAndObjective()
 	elseif distance3D < Config.RetreatEnterDistance then
 		cancelPathRequest()
 		NavigationGoal = nil
+		if RuntimeState.RetreatSide == nil or now >= (RuntimeState.RetreatSideUntil or 0) then
+			RuntimeState.RetreatSide = RuntimeState.RetreatSide or 1
+			RuntimeState.RetreatSideUntil = now + 0.75
+		end
 		setNavigationState(NavigationState.RETREAT)
 		return
 	end
@@ -2487,11 +2494,9 @@ local function createObsidianUI()
 	end
 	local setupOk, setupErr = xpcall(function()
 		local farmTab = window:AddTab("FARM", "bot")
-		local movementTab = window:AddTab("MOVEMENT", "move")
 		local statusTab = window:AddTab("STATUS", "activity")
 		local settingsTab = window:AddTab("SETTINGS", "settings")
 		local farmGroup = farmTab:AddGroupbox({ Side = "Left", Name = "Automation" })
-		local movementGroup = movementTab:AddGroupbox({ Side = "Left", Name = "Movement" })
 		local statusGroup = statusTab:AddGroupbox({ Side = "Left", Name = "Status" })
 		local settingsDodge = settingsTab:AddGroupbox({ Side = "Left", Name = "Dodge" })
 		local settingsCombat = settingsTab:AddGroupbox({ Side = "Right", Name = "Combat" })
@@ -2504,6 +2509,14 @@ local function createObsidianUI()
 			Config.AutoReplay = value
 			saveConfig()
 		end)
+		farmGroup:AddToggle("SpeedBoostEnabled", { Text = "Speed Boost", Default = Config.SpeedBoostEnabled }):OnChanged(function(value)
+			Config.SpeedBoostEnabled = value
+			saveConfig()
+		end)
+		farmGroup:AddSlider("SpeedValue", { Text = "Speed", Default = Config.SpeedValue, Min = 20, Max = 100, Rounding = 0 }):OnChanged(function(value)
+			Config.SpeedValue = value
+			saveConfig()
+		end)
 		farmGroup:AddToggle("AutoStart", { Text = "Auto Start", Default = Config.AutoStart }):OnChanged(function(value)
 			Config.AutoStart = value
 			saveConfig()
@@ -2512,19 +2525,30 @@ local function createObsidianUI()
 			Config.FarmRange = value
 			saveConfig()
 		end)
-		movementGroup:AddLabel("Walk Speed: 23 studs/s")
+		local webhookGroup = farmTab:AddGroupbox({ Side = "Right", Name = "Webhook" })
+		webhookGroup:AddToggle("WebhookEnabled", { Text = "Enable", Default = Config.WebhookEnabled }):OnChanged(function(value)
+			Config.WebhookEnabled = value
+			saveConfig()
+		end)
+		webhookGroup:AddInput("WebhookURL", { Text = "URL", Default = Config.WebhookURL, Numeric = false, Finished = true }):OnChanged(function(value)
+			Config.WebhookURL = value
+			saveConfig()
+		end)
+		for _, item in ipairs({
+			{ "WebhookPingEveryone", "Ping Everyone" },
+			{ "WebhookPingLegend", "Ping on Legend" },
+			{ "WebhookPingUltimate", "Ping on Ultimate" },
+		}) do
+			webhookGroup:AddToggle(item[1], { Text = item[2], Default = Config[item[1]] }):OnChanged(function(value)
+				Config[item[1]] = value
+				saveConfig()
+			end)
+		end
 		settingsDodge:AddToggle("DodgeEnabled", { Text = "Dodge Enabled", Default = Config.DodgeEnabled }):OnChanged(function(value)
 			Config.DodgeEnabled = value
 			saveConfig()
 		end)
-		local dodgeSettings = {
-			{ "DodgeDetectionRadius", "Detection Radius", 20, 200, 1 },
-			{ "DodgeSafePadding", "Safe Padding", 0, 20, 0.5 },
-			{ "DodgeTriggerPadding", "Trigger Padding", 0, 20, 0.5 },
-			{ "DodgePreTriggerPadding", "Pre-Trigger Padding", 0, 30, 0.5 },
-			{ "DodgeLookaheadSeconds", "Lookahead Seconds", 0.1, 3, 0.1 },
-			{ "DodgeExitHysteresis", "Exit Hysteresis", 0, 2, 0.05 },
-		}
+		local dodgeSettings = {}
 		for _, spec in ipairs(dodgeSettings) do
 			local key, text, minimum, maximum, rounding = spec[1], spec[2], spec[3], spec[4], spec[5]
 			settingsDodge:AddSlider(key, { Text = text, Default = Config[key], Min = minimum, Max = maximum, Rounding = rounding }):OnChanged(function(value)
@@ -2533,9 +2557,6 @@ local function createObsidianUI()
 			end)
 		end
 		local combatSettings = {
-			{ "PreferredCombatDistance", "Preferred Combat", 10, 150 },
-			{ "RetreatEnterDistance", "Retreat Enter", 10, 150 },
-			{ "RetreatExitDistance", "Retreat Exit", 10, 180 },
 			{ "NormalSkillRange", "Normal Skill Range", 10, 150 },
 			{ "BossSkillRange", "Boss Skill Range", 10, 200 },
 			{ "AttackRange", "Attack Range", 5, 50 },
@@ -2547,11 +2568,7 @@ local function createObsidianUI()
 				saveConfig()
 			end)
 		end
-		local navigationSettings = {
-			{ "FarmRange", "Farm Range", 100, 1500 },
-			{ "ExploreStartDelay", "Explore Start Delay", 0, 10 },
-			{ "PathRebuildCooldown", "Path Rebuild Cooldown", 0.2, 5 },
-		}
+		local navigationSettings = {}
 		for _, spec in ipairs(navigationSettings) do
 			local key, text, minimum, maximum = spec[1], spec[2], spec[3], spec[4]
 			settingsNavigation:AddSlider(key, { Text = text, Default = Config[key], Min = minimum, Max = maximum, Rounding = 1 }):OnChanged(function(value)
