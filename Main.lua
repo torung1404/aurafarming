@@ -951,7 +951,8 @@ CombatController = CombatControllerModule.new({
 	ValidTarget = validTarget,
 	IsBossTarget = isBossTarget,
 	SkillRangeForTarget = skillRangeForTarget,
-	GetNavigationState = function() return MovementController.State or State end,
+	-- Main owns live navigation until the incomplete Movement migration is done.
+	GetNavigationState = function() return State end,
 	NavigationState = NavigationState,
 })
 
@@ -1024,7 +1025,7 @@ ObsidianUI = ObsidianUIModule.new({
 	GetTarget = function() return Target end,
 	GetRoot = function() return Root end,
 	GetTargetRoot = getTargetRoot,
-	GetNavigationState = function() return MovementController.State or State end,
+	GetNavigationState = function() return State end,
 	GetActiveHazard = function() return DodgeController:getActiveHazard() end,
 	NavigationState = NavigationState,
 	GetRemainingDungeonTime = function()
@@ -1277,6 +1278,15 @@ local function cachedStartScreen(): (GuiObject?, GuiButton?)
 		print("[START] button=" .. buttonName)
 	end
 	return RuntimeState.StartMarker, RuntimeState.StartButton
+end
+
+-- Canonical module compatibility boundary. Legacy callers keep their API, but
+-- resolver/timer state now has one owner instead of two competing scanners.
+RuntimeState.refreshDungeonReferences = function()
+	return DungeonResolver:refresh()
+end
+RuntimeState.remainingDungeonTime = function(): number?
+	return TimerResolver:getRemainingTime()
 end
 
 resolveStartButton = function(marker: GuiObject): GuiButton?
@@ -1686,6 +1696,11 @@ setNavigationState = function(newState: string)
 	end
 	telemetry("STATE", State .. " -> " .. newState)
 	State = newState
+	-- MovementController is presently a helper provider, not a second state
+	-- authority. Mirror Main's authoritative state for any helper that reads it.
+	if MovementController then
+		MovementController.State = newState
+	end
 	local activity = ({
 		IDLE = "IDLE", DIRECT = "MOVING TO ENEMY", PATH = "PATHING TO ENEMY",
 		COMBAT = "ATTACKING", RECOVERY = "RECOVERING", STEER = "MOVING TO ENEMY",
@@ -2462,7 +2477,7 @@ local function bindCharacter(character: Model)
 		return
 	end
 	disconnectAll(CharacterConnections)
-	clearAimObjects()
+	CombatController:resetForCharacter()
 	restoreMovementSpeed()
 	cancelPathRequest()
 	Character = character
@@ -2472,7 +2487,6 @@ local function bindCharacter(character: Model)
 		RuntimeState.DefaultAutoRotate = Humanoid.AutoRotate
 		RuntimeState.DefaultWalkSpeed = Humanoid.WalkSpeed
 	end
-	Combat.NextQAt, Combat.NextEAt, Combat.LastAttack = 0, 0, 0
 	RespawnInProgress = false
 	ResetExecuting = false
 	NoTargetSince = os.clock()
@@ -2542,7 +2556,13 @@ local function shutdown()
 	CombatController:enablePlayerControls()
 	disconnectAll(Connections)
 	disconnectAll(CharacterConnections)
-	clearAimObjects()
+	disconnectAll(DungeonConnections)
+	cancelPathRequest()
+	if RuntimeState.BossDiedConnection then
+		disconnect(RuntimeState.BossDiedConnection)
+		RuntimeState.BossDiedConnection = nil
+	end
+	CombatController:clearAimObjects()
 	local library = RuntimeState.ObsidianLibrary
 	if library and not library.Unloaded and type(library.Unload) == "function" then
 		pcall(function()

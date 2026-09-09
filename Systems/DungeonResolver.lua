@@ -82,9 +82,10 @@ function DungeonResolver:bootstrap(root: Instance)
 		if object:IsA("Model") then
 			ctx.RegisterEnemy(object)
 			ctx.RegisterSkillModel(object)
-		elseif object:IsA("BasePart") then
+		elseif object:IsA("Humanoid") or object:IsA("BasePart") then
 			local owner = object:FindFirstAncestorOfClass("Model")
 			if owner then
+				ctx.RegisterEnemy(owner)
 				ctx.RegisterSkillModel(owner)
 			end
 		end

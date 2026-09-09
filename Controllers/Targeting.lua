@@ -16,6 +16,7 @@ function Targeting.new(context)
 	self.telemetry = context.telemetry
 	self.logPerf = context.logPerf
 	self.EnemySet = {}
+	self.PendingEnemyModels = {}
 	self.LastTargetAcquireAt = -math.huge
 	return self
 end
@@ -26,6 +27,7 @@ end
 
 function Targeting:clear()
 	table.clear(self.EnemySet)
+	table.clear(self.PendingEnemyModels)
 	self.LastTargetAcquireAt = -math.huge
 end
 
@@ -85,9 +87,14 @@ function Targeting:registerEnemy(instance: Instance, running: boolean)
 	local humanoid = instance:FindFirstChildOfClass("Humanoid")
 	local root = self.getTargetRoot(instance)
 	if not humanoid or humanoid.Health <= 0 or not root then
-		self.RuntimeState.EnemyCandidates[instance] = nil
+		-- Models commonly replicate before their Humanoid/root. Keep the model
+		-- pending so the dungeon-level DescendantAdded retry can promote it
+		-- immediately, rather than waiting for the fallback scan.
+		self.PendingEnemyModels[instance] = true
+		self.RuntimeState.EnemyCandidates[instance] = true
 		return
 	end
+	self.PendingEnemyModels[instance] = nil
 	self.RuntimeState.EnemyCandidates[instance] = true
 	if self.getRoot() and self:isValidCombatTarget(instance) then
 		local wasKnown = self.EnemySet[instance] == true
@@ -97,6 +104,13 @@ function Targeting:registerEnemy(instance: Instance, running: boolean)
 		end
 	end
 	self.logPerf("registerEnemy", startedAt)
+end
+
+function Targeting:retryFromDescendant(instance: Instance, running: boolean)
+	local model = if instance:IsA("Model") then instance else instance:FindFirstAncestorOfClass("Model")
+	if model then
+		self:registerEnemy(model, running)
+	end
 end
 
 function Targeting:acquireBestTarget(): Model?

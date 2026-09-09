@@ -24,11 +24,6 @@ function Lifecycle:update()
 	runtime.LastDungeonStateCheckAt = now
 	ctx.RefreshDungeonReferences()
 
-	local startMarker = ctx.CachedStartScreen()
-	if startMarker then
-		ctx.TryStartDungeon()
-		return
-	end
 	local remaining = ctx.GetRemainingDungeonTime()
 
 	local function hasActiveRoundEvidence(): boolean
@@ -60,6 +55,15 @@ function Lifecycle:update()
 			end
 		end
 		return false
+	end
+
+	-- A generic visible "Start" label is not authoritative while a dungeon is
+	-- already active. This prevents stale/unrelated GUI from starving resolver,
+	-- target acquisition, and replay processing.
+	local startMarker = ctx.CachedStartScreen()
+	if startMarker and not hasActiveRoundEvidence() then
+		ctx.TryStartDungeon()
+		return
 	end
 
 	local fightingBoss = runtime.FightingBossInstance
@@ -128,10 +132,9 @@ function Lifecycle:update()
 	end
 
 	if runtime.RoundPhase == "WAIT_NEW_ROUND" then
-		if runtime.DungeonIdentity ~= nil
-			and runtime.DungeonIdentity ~= runtime.ReplayDungeonIdentity
-			and hasActiveRoundEvidence()
-		then
+		-- Some games reuse the same dungeon root. A confirmed replay transition
+		-- plus active evidence is enough; identity change is only a bonus signal.
+		if not resultVisible and hasActiveRoundEvidence() then
 			ctx.ResetRuntimeForNewDungeon()
 		end
 		return

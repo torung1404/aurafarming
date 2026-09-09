@@ -164,22 +164,20 @@ function Replay:tryReplayDungeon()
 		end
 	end
 	if runtime.ReplayRetries > 5 then
-		self:setPhase("IDLE")
+		-- Input issuance is not UI evidence. Keep the result armed and discard
+		-- stale references instead of silently stranding AutoReplay in IDLE.
+		runtime.ReplayRetries = 0
+		runtime.ReplayOpener = nil
+		runtime.ReplayYesButton = nil
+		runtime.ReplayConfirmRoot = nil
+		runtime.ReplayResultScanDirty = true
+		self:setPhase("RESULT_DETECTED")
 		return
 	end
 	if phase == "IDLE" then
 		return
 	end
-	if phase == "WAIT_NEW_ROUND" then
-		if runtime.DungeonIdentity ~= runtime.ReplayDungeonIdentity then
-			self:setPhase("IDLE")
-			return
-		end
-		if phaseAge > 3 then
-			self:setPhase("RESULT_DETECTED")
-		end
-		return
-	end
+	if phase == "WAIT_NEW_ROUND" then return end
 	if phase == "ARMED" and runtime.ReplayCompletionDetected then self:setPhase("RESULT_DETECTED"); phase = runtime.ReplayPhase end
 	if phase == "RESULT_DETECTED" or phase == "ARMED" then
 		local opener = runtime.ReplayOpener
@@ -187,7 +185,7 @@ function Replay:tryReplayDungeon()
 		if opener and now - runtime.ReplayLastActionAt >= 0.75 then
 			print("[REPLAY] click opener")
 			local issued = self:clickButton(opener)
-			print("[REPLAY] click=" .. (issued and "PASS" or "FAIL"))
+			print("[REPLAY] click-issued=" .. (issued and "YES" or "NO"))
 			runtime.ReplayLastActionAt = now
 			runtime.ReplayRetries += 1
 			self:setPhase("OPENING")
@@ -196,26 +194,35 @@ function Replay:tryReplayDungeon()
 		if phaseAge > 8 then self:setPhase("IDLE") end
 		return
 	end
+	if phase == "CONFIRMING" then
+		local awaiting = runtime.ReplayAwaitingClose
+		if awaiting and (not awaiting:IsDescendantOf(game) or not self.visibleGui(awaiting)) then
+			runtime.ReplayAwaitingClose = nil
+			runtime.ReplayDungeonIdentity = runtime.DungeonIdentity
+			print("[REPLAY] confirmation closed; waiting new round")
+			self:setPhase("WAIT_NEW_ROUND")
+			return
+		end
+		if phaseAge > 8 then
+			runtime.ReplayYesButton = nil
+			runtime.ReplayConfirmRoot = nil
+			self:setPhase("RESULT_DETECTED")
+		end
+		return
+	end
 	local yes = runtime.ReplayYesButton
 	if not yes or not yes:IsDescendantOf(game) or not self.visibleGui(yes) then yes = self:findButton(); runtime.ReplayYesButton = yes end
 	if yes and now - runtime.ReplayLastActionAt >= 0.75 then
 		print("[REPLAY] click yes")
 		local issued = self:clickButton(yes)
-		print("[REPLAY] click=" .. (issued and "PASS" or "FAIL"))
+		print("[REPLAY] click-issued=" .. (issued and "YES" or "NO"))
 		runtime.ReplayAwaitingClose = yes
 		runtime.ReplayLastActionAt = now
 		runtime.ReplayRetries += 1
 		self:setPhase("CONFIRMING")
 		return
 	end
-	if phase == "CONFIRMING" and runtime.ReplayAwaitingClose and (not runtime.ReplayAwaitingClose:IsDescendantOf(game) or not self.visibleGui(runtime.ReplayAwaitingClose)) then
-		runtime.ReplayAwaitingClose = nil
-		runtime.ReplayDungeonIdentity = runtime.DungeonIdentity
-		print("[REPLAY] waiting new round")
-		self:setPhase("WAIT_NEW_ROUND")
-		return
-	end
-	if (phase == "OPENING" or phase == "CONFIRMING") and phaseAge > 8 then
+	if phase == "OPENING" and phaseAge > 8 then
 		self:setPhase("RESULT_DETECTED")
 	end
 end

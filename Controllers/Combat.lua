@@ -270,4 +270,21 @@ function CombatController:enablePlayerControls()
 	end
 end
 
+function CombatController:resetForCharacter()
+	local state = self.State
+	self:restoreRotation()
+	self:clearAimObjects()
+	state.LastAttack = 0
+	state.NextQAt = 0
+	state.NextEAt = 0
+	if state.PlayerControlsDisabled and state.PlayerControls and type(state.PlayerControls.Enable) == "function" then
+		pcall(function()
+			state.PlayerControls:Enable()
+		end)
+	end
+	state.PlayerControls = nil
+	state.PlayerControlsDisabled = false
+	state.PlayerControlsResolvePending = false
+end
+
 return CombatController
