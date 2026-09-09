@@ -32,12 +32,15 @@ function Lifecycle:update()
 
 	local function hasActiveRoundEvidence(): boolean
 		local root = runtime.ActiveDungeonRoot
-		if not root or not root:IsDescendantOf(workspace) or not runtime.EnemyFolderInstance then
+		if not root or not root:IsDescendantOf(workspace) then
 			return false
 		end
 
 		local timer = runtime.DungeonTimeInstance
 		if timer and timer:IsDescendantOf(root) then
+			return true
+		end
+		if runtime.EnemyFolderInstance and runtime.EnemyFolderInstance:IsDescendantOf(root) then
 			return true
 		end
 

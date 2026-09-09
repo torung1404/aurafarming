@@ -99,6 +99,16 @@ function DungeonResolver:bootstrap(root: Instance)
 	end))
 
 	runtime.DungeonBootstrapped = true
+	local rootPath = root:GetFullName()
+	local folderPath = runtime.EnemyFolderInstance and runtime.EnemyFolderInstance:GetFullName() or "nil"
+	if runtime.DebugDungeonRoot ~= rootPath then
+		runtime.DebugDungeonRoot = rootPath
+		print("[DUNGEON] root=" .. rootPath)
+	end
+	if runtime.DebugEnemyFolder ~= folderPath then
+		runtime.DebugEnemyFolder = folderPath
+		print("[DUNGEON] enemyFolder=" .. folderPath)
+	end
 end
 
 function DungeonResolver:refresh()
@@ -156,6 +166,15 @@ function DungeonResolver:refresh()
 
 	if candidate then
 		self:bootstrap(candidate)
+	else
+		if runtime.DebugDungeonRoot ~= "nil" then
+			runtime.DebugDungeonRoot = "nil"
+			print("[DUNGEON] root=nil")
+		end
+		if runtime.DebugEnemyFolder ~= "nil" then
+			runtime.DebugEnemyFolder = "nil"
+			print("[DUNGEON] enemyFolder=nil")
+		end
 	end
 end
 

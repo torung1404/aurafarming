@@ -147,6 +147,11 @@ function Targeting:acquireBestTarget(): Model?
 		return first.Distance < second.Distance
 	end)
 	local best = cheapCandidates[1]
+	local candidateCount = #cheapCandidates
+	if self.RuntimeState.DebugTargetCandidateCount ~= candidateCount then
+		self.RuntimeState.DebugTargetCandidateCount = candidateCount
+		print("[TARGET] candidates=" .. tostring(candidateCount))
+	end
 	if not best then
 		return nil
 	end
