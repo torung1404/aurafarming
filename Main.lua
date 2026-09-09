@@ -852,6 +852,12 @@ end
 
 local function guiRoots(): { Instance }
 	local roots: { Instance } = { PlayerGui }
+	local okCoreGui, coreGui = pcall(function()
+		return game:GetService("CoreGui")
+	end)
+	if okCoreGui and coreGui then
+		table.insert(roots, coreGui)
+	end
 	if type(gethui) == "function" then
 		local ok, hiddenUi = pcall(gethui)
 		if ok and typeof(hiddenUi) == "Instance" then
@@ -1251,6 +1257,14 @@ local function cachedStartScreen(): (GuiObject?, GuiButton?)
 	marker = findStartMarker()
 	RuntimeState.StartMarker = marker
 	RuntimeState.StartButton = marker and resolveStartButton(marker) or nil
+	local markerName = marker and marker:GetFullName() or "nil"
+	local buttonName = RuntimeState.StartButton and RuntimeState.StartButton:GetFullName() or "nil"
+	local signature = markerName .. "|" .. buttonName
+	if RuntimeState.StartDebugSignature ~= signature then
+		RuntimeState.StartDebugSignature = signature
+		print("[START] marker=" .. markerName)
+		print("[START] button=" .. buttonName)
+	end
 	return RuntimeState.StartMarker, RuntimeState.StartButton
 end
 
@@ -1313,6 +1327,11 @@ local function tryStartDungeon(): boolean
 		setRoundPhase("PRE_START")
 	end
 	if not Running or not Config.AutoStart or os.clock() - RuntimeState.LastStartClickAt < 1 then
+		local blocked = if not Running then "not-running" elseif not Config.AutoStart then "auto-start-disabled" else "cooldown"
+		if RuntimeState.StartDebugBlockState ~= blocked then
+			RuntimeState.StartDebugBlockState = blocked
+			print("[START] blocked=" .. blocked)
+		end
 		return true
 	end
 	if not VirtualInputManager then
@@ -1332,7 +1351,16 @@ local function tryStartDungeon(): boolean
 	end)
 	if issued then
 		setRoundPhase("COUNTDOWN")
+		if RuntimeState.StartDebugClickState ~= "PASS" then
+			RuntimeState.StartDebugClickState = "PASS"
+			print("[START] click=PASS")
+		end
 		telemetry("START", clickTarget:GetFullName())
+	else
+		if RuntimeState.StartDebugClickState ~= "FAIL" then
+			RuntimeState.StartDebugClickState = "FAIL"
+			print("[START] click=FAIL")
+		end
 	end
 	return true
 end
