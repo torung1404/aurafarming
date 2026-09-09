@@ -5884,11 +5884,13 @@ end
 return ObsidianUI
 ]=],
 }
+
 local Node = {}
 
 Node.__index = function(self, key)
 	return rawget(self, "_children")[key]
 end
+
 local function newNode(name, path, parent)
 	return setmetatable({
 		Name = name,
