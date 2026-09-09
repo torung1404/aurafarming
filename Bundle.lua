@@ -1,6 +1,6 @@
 -- Auto-generated Delta bundle.
 local SOURCES = {
-	["Config.lua"] = [=[
+    ["Config.lua"] = [=[
 -- Safe defaults only. User/runtime overrides are loaded by Systems.ConfigStore.
 return {
 	EnemyKeywords = { "enemy", "boss", "mob", "monster", "zombie", "deity", "volcano", "protector" },
@@ -28,6 +28,8 @@ return {
 	SkillEToolName = "E",
 	UseTool = false,
 	TargetWalkSpeed = 23,
+	SpeedBoostEnabled = false,
+	SpeedValue = 23,
 	MovementSpeedMultiplier = 1.3,
 	DirectReachedDistance = 0.75,
 	DirectVerticalTolerance = 7,
@@ -80,13 +82,15 @@ return {
 	AutoStart = true,
 	WebhookEnabled = true,
 	WebhookURL = "",
+	WebhookPingEveryone = false,
+	WebhookPingLegend = false,
+	WebhookPingUltimate = false,
 	FarmEnabled = false,
 	ShowHUD = true,
 	HUDPosition = UDim2.fromScale(0.98, 0.04),
 }
-
 ]=],
-	["Controllers/Combat.lua"] = [=[
+    ["Controllers/Combat.lua"] = [=[
 local CombatController = {}
 CombatController.__index = CombatController
 
@@ -360,9 +364,8 @@ function CombatController:enablePlayerControls()
 end
 
 return CombatController
-
 ]=],
-	["Controllers/Dodge.lua"] = [=[
+    ["Controllers/Dodge.lua"] = [=[
 local Dodge = {}
 Dodge.__index = Dodge
 
@@ -836,9 +839,8 @@ function Dodge:update(): boolean
 end
 
 return Dodge
-
 ]=],
-	["Controllers/Lifecycle.lua"] = [=[
+    ["Controllers/Lifecycle.lua"] = [=[
 local Lifecycle = {}
 Lifecycle.__index = Lifecycle
 
@@ -873,12 +875,15 @@ function Lifecycle:update()
 
 	local function hasActiveRoundEvidence(): boolean
 		local root = runtime.ActiveDungeonRoot
-		if not root or not root:IsDescendantOf(workspace) or not runtime.EnemyFolderInstance then
+		if not root or not root:IsDescendantOf(workspace) then
 			return false
 		end
 
 		local timer = runtime.DungeonTimeInstance
 		if timer and timer:IsDescendantOf(root) then
+			return true
+		end
+		if runtime.EnemyFolderInstance and runtime.EnemyFolderInstance:IsDescendantOf(root) then
 			return true
 		end
 
@@ -975,9 +980,8 @@ function Lifecycle:update()
 end
 
 return Lifecycle
-
 ]=],
-	["Controllers/Movement.lua"] = [=[
+    ["Controllers/Movement.lua"] = [=[
 local Movement = {}
 Movement.__index = Movement
 
@@ -1030,16 +1034,16 @@ function Movement.new(context)
 	self.ExploredCellOrder = {} :: { string }
 
 	self.NavigationState = context.NavigationState or {
-		IDLE = "IDLE",
-		DIRECT = "DIRECT",
-		STEER = "STEER",
-		RETREAT = "RETREAT",
-		PATH = "PATH",
-		COMBAT = "COMBAT",
-		RECOVERY = "RECOVERY",
-		DODGE = "DODGE",
-		EXPLORE = "EXPLORE",
-	}
+	IDLE = "IDLE",
+	DIRECT = "DIRECT",
+	STEER = "STEER",
+	RETREAT = "RETREAT",
+	PATH = "PATH",
+	COMBAT = "COMBAT",
+	RECOVERY = "RECOVERY",
+	DODGE = "DODGE",
+	EXPLORE = "EXPLORE",
+    }
 
 	self.State = self.NavigationState.IDLE
 	self.NavigationGoal = nil :: Vector3?
@@ -1482,17 +1486,23 @@ function Movement:updateRecoveryMovement()
 		local enemyRoot = self.getTargetRoot(target)
 		if enemyRoot then
 			local away = Vector3.new(root.Position.X - enemyRoot.Position.X, 0, root.Position.Z - enemyRoot.Position.Z)
-			local direction = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
+			local backward = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
+			local sideSign = self.RuntimeState.RetreatSide or 1
+			local side = Vector3.new(-backward.Z, 0, backward.X) * sideSign
+			local direction = (backward + side).Unit
 			local retreatPoint, foundGround = self:projectToWalkableGround(root.Position + direction * 7, target)
 			if
 				foundGround
 				and math.abs(retreatPoint.Y - root.Position.Y) <= self.Config.DirectVerticalTolerance
 				and self:hasGroundSupport(retreatPoint, target)
 				and self:directRouteClear(retreatPoint, target)
+				and self.pointIsSafeFromHazards(retreatPoint)
 			then
 				self:commandMovement(direction, false)
 			else
-				self:commandMovement(Vector3.zero, false)
+				self.RuntimeState.RetreatSide = -sideSign
+				self.RuntimeState.RetreatSideUntil = os.clock() + 0.75
+				self:commandMovement((backward - side).Unit, false)
 			end
 			return
 		end
@@ -1894,9 +1904,9 @@ function Movement:commandMovement(direction: Vector3, _owner: string?)
 		self:releaseMovement()
 		return
 	end
-	if self.Config.SpeedEnabled then
+	if self.Config.SpeedBoostEnabled then
 		local velocity = root.AssemblyLinearVelocity
-		root.AssemblyLinearVelocity = Vector3.new(flat.Unit.X * self.Config.MoveSpeed, velocity.Y, flat.Unit.Z * self.Config.MoveSpeed)
+		root.AssemblyLinearVelocity = Vector3.new(flat.Unit.X * self.Config.SpeedValue, velocity.Y, flat.Unit.Z * self.Config.SpeedValue)
 		self.RuntimeState.VelocityOwned = true
 	else
 		humanoid:Move(flat.Unit, false)
@@ -1910,7 +1920,7 @@ function Movement:releaseMovement()
 		local velocity = root.AssemblyLinearVelocity
 		root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
 		self.RuntimeState.VelocityOwned = false
-	elseif humanoid and not self.Config.SpeedEnabled then
+	elseif humanoid and not self.Config.SpeedBoostEnabled then
 		humanoid:Move(Vector3.zero, false)
 	end
 end
@@ -1921,7 +1931,7 @@ end
 
 return Movement
 ]=],
-	["Controllers/Replay.lua"] = [=[
+    ["Controllers/Replay.lua"] = [=[
 local Replay = {}
 Replay.__index = Replay
 
@@ -2159,9 +2169,8 @@ function Replay:arm(reason: string)
 end
 
 return Replay
-
 ]=],
-	["Controllers/Targeting.lua"] = [=[
+    ["Controllers/Targeting.lua"] = [=[
 local Targeting = {}
 Targeting.__index = Targeting
 
@@ -2311,6 +2320,11 @@ function Targeting:acquireBestTarget(): Model?
 		return first.Distance < second.Distance
 	end)
 	local best = cheapCandidates[1]
+	local candidateCount = #cheapCandidates
+	if self.RuntimeState.DebugTargetCandidateCount ~= candidateCount then
+		self.RuntimeState.DebugTargetCandidateCount = candidateCount
+		print("[TARGET] candidates=" .. tostring(candidateCount))
+	end
 	if not best then
 		return nil
 	end
@@ -2351,15 +2365,14 @@ function Targeting:findNearestEnemyInSkillRange(): (Model?, BasePart?, number)
 end
 
 return Targeting
-
 ]=],
-	["Main.lua"] = [=[
+    ["Main.lua"] = [=[
 -- Delta Executor version. Paste the complete file into Delta.
 -- One Heartbeat owns movement; DODGE preempts COMBAT, DIRECT, PATH, RECOVERY, and EXPLORE.
 
 print("[BOOT0] AUTOFARM ENTERED")
 
-function bootStep(name, callback)
+local function bootStep(name, callback)
 	print("[BOOT] BEGIN " .. name)
 	local ok, result = xpcall(callback, function(err)
 		return debug.traceback(tostring(err), 2)
@@ -2427,7 +2440,7 @@ local NavigationState = {
 }
 
 local Environment = (type(getgenv) == "function" and getgenv()) or _G
-function getCapability(name: string)
+local function getCapability(name: string)
 	local value = Environment[name]
 	if value == nil then
 		value = rawget(_G, name)
@@ -2449,7 +2462,7 @@ local Config = ConfigStore.load(HttpService, Environment)
 
 local RuntimeState
 
-function saveConfig()
+local function saveConfig()
 	ConfigStore.save(HttpService, Config)
 end
 
@@ -2543,14 +2556,14 @@ local cancelPathRequest
 local pathRemainingMetric
 local restoreRotation
 
-function logPerf(name: string, startedAt: number)
+local function logPerf(name: string, startedAt: number)
 	local elapsed = (os.clock() - startedAt) * 1000
 	if elapsed >= 8 then
 		print(string.format("[PERF] %s=%.1fms", name, elapsed))
 	end
 end
 
-function telemetry(event: string, message: string)
+local function telemetry(event: string, message: string)
 	if not Config.DebugTelemetry or LastTelemetry[event] == message then
 		return
 	end
@@ -2570,10 +2583,7 @@ RuntimeState.sendStatusWebhook = function(event: string)
 	if now - (RuntimeState.WebhookLastByEvent[event] or -math.huge) < 2 then
 		return
 	end
-	local requester = if type(request) == "function"
-		then request
-		elseif type(http_request) == "function" then http_request
-		else nil
+	local requester = if type(request) == "function" then request else nil
 	if type(requester) ~= "function" then
 		return
 	end
@@ -2624,24 +2634,24 @@ RuntimeState.sendStatusWebhook = function(event: string)
 	end)
 end
 
-function disconnect(connection: RBXScriptConnection?)
+local function disconnect(connection: RBXScriptConnection?)
 	if connection and connection.Connected then
 		connection:Disconnect()
 	end
 end
 
-function disconnectAll(list: { RBXScriptConnection })
+local function disconnectAll(list: { RBXScriptConnection })
 	for index = #list, 1, -1 do
 		disconnect(list[index])
 		list[index] = nil
 	end
 end
 
-function alive(): boolean
+local function alive(): boolean
 	return Character ~= nil and Humanoid ~= nil and Root ~= nil and Character.Parent ~= nil and Humanoid.Health > 0
 end
 
-function isEnemy(model: Model): boolean
+local function isEnemy(model: Model): boolean
 	local current: Instance? = model
 	while current and current ~= workspace do
 		local name = current.Name:lower()
@@ -2667,7 +2677,7 @@ local DungeonResolver
 local LifecycleController
 local CombatController
 
-function isBossTarget(model: Model): boolean
+local function isBossTarget(model: Model): boolean
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 or not model:IsDescendantOf(workspace) then
 		return false
@@ -2688,7 +2698,7 @@ function isBossTarget(model: Model): boolean
 	end
 	return false
 end
-function skillRangeForTarget(target: Model): number
+local function skillRangeForTarget(target: Model): number
 	local boss = isBossTarget(target)
 	local range = boss and Config.BossSkillRange or Config.NormalSkillRange
 	local signature = (boss and "BOSS" or "NORMAL") .. ":" .. tostring(range)
@@ -2755,17 +2765,15 @@ TargetingController = TargetingControllerModule.new({
 })
 local EnemySet = TargetingController.EnemySet
 
-function isValidCombatTarget(model: Model?): boolean
+local function isValidCombatTarget(model: Model?): boolean
 	return TargetingController:isValidCombatTarget(model)
 end
-function validTarget(target: Model?): boolean
+local function validTarget(target: Model?): boolean
 	return TargetingController:validTarget(target)
 end
-function registerEnemy(instance: Instance)
+local function registerEnemy(instance: Instance)
 	TargetingController:registerEnemy(instance, Running)
 end
-local refreshNearbyActiveHazards
-local dodgeRouteClear
 MovementController = MovementControllerModule.new({
 	Config = Config,
 	RuntimeState = RuntimeState,
@@ -2775,49 +2783,21 @@ MovementController = MovementControllerModule.new({
 	getHumanoid = function() return Humanoid end,
 	getRoot = function() return Root end,
 	getTarget = function() return Target end,
-	getEnabled = function() return Enabled end,
-	getRunning = function() return Running end,
-	alive = function() return alive() end,
-	getTargetRoot = getTargetRoot,
-	getActiveHazard = function()
-		return DodgeController and DodgeController:getActiveHazard() or nil
-	end,
-	validTarget = validTarget,
-	recoverByRespawn = function(...)
-		return recoverByRespawn(...)
-	end,
-	isRespawnInProgress = function()
-		return RespawnInProgress
-	end,
-	refreshNearbyActiveHazards = function()
-		if refreshNearbyActiveHazards then
-			return refreshNearbyActiveHazards()
-		end
-	end,
-	dodgeRouteClear = function(goal)
-		if dodgeRouteClear then
-			return dodgeRouteClear(goal)
-		end
-		return true
-	end,
-	telemetry = telemetry,
-	pointIsSafeFromHazards = function(position)
-		return pointIsSafeFromHazards(position)
-	end,
+	pointIsSafeFromHazards = function(position) return pointIsSafeFromHazards(position) end,
 })
-function makeRaycastParams(target: Model?): RaycastParams
+local function makeRaycastParams(target: Model?): RaycastParams
 	return MovementController:makeRaycastParams(target)
 end
 
-function rootGroundOffset(): number
+local function rootGroundOffset(): number
 	return MovementController:rootGroundOffset()
 end
 
-function projectToWalkableGround(position: Vector3, target: Model?): (Vector3, boolean)
+local function projectToWalkableGround(position: Vector3, target: Model?): (Vector3, boolean)
 	return MovementController:projectToWalkableGround(position, target)
 end
 
-function hasGroundSupport(position: Vector3, target: Model?): boolean
+local function hasGroundSupport(position: Vector3, target: Model?): boolean
 	return MovementController:hasGroundSupport(position, target)
 end
 
@@ -2843,7 +2823,7 @@ hazardNameHint = function(part: BasePart): boolean
 	return false
 end
 
-function isHazardCandidate(part: BasePart): boolean
+local function isHazardCandidate(part: BasePart): boolean
 	if Character and part:IsDescendantOf(Character) then
 		return false
 	end
@@ -2854,32 +2834,32 @@ function isHazardCandidate(part: BasePart): boolean
 	return hazardNameHint(part) or (broadAndThin and not elongated)
 end
 
-function isActiveHazardPart(part: BasePart): boolean
+local function isActiveHazardPart(part: BasePart): boolean
 	return SkillFXController:isActiveHazardPart(part)
 end
 
 local hazardThreatensHeight
 
-function registerSkillModel(model: Model)
+local function registerSkillModel(model: Model)
 	SkillFXController:registerModel(model)
 end
 
-function unregisterSkillModel(model: Model)
+local function unregisterSkillModel(model: Model)
 	SkillFXController:unregisterModel(model)
 end
 
-function skillPartThreatens(part: BasePart, position: Vector3, padding: number): boolean
+local function skillPartThreatens(part: BasePart, position: Vector3, padding: number): boolean
 	return DodgeController:skillPartThreatens(part, position, padding)
 end
 
-function registerHazard(instance: Instance)
+local function registerHazard(instance: Instance)
 	-- Cache structural candidates, not only parts that happen to be red at creation time.
 	if instance:IsA("BasePart") and (isHazardCandidate(instance) or isActiveHazardPart(instance)) then
 		HazardSet[instance] = true
 	end
 end
 
-function buildInitialCaches()
+local function buildInitialCaches()
 	local startedAt = os.clock()
 	RuntimeState.refreshDungeonReferences()
 	logPerf("dungeonBootstrap", startedAt)
@@ -2945,7 +2925,7 @@ RuntimeState.predictedHazardRadius = function(part: BasePart): (number, boolean)
 	return DodgeController:predictedHazardRadius(part)
 end
 
-function hazardRadius(part: BasePart): number
+local function hazardRadius(part: BasePart): number
 	return DodgeController:hazardRadius(part)
 end
 
@@ -2953,15 +2933,15 @@ hazardThreatensHeight = function(part: BasePart, position: Vector3): boolean
 	return DodgeController:hazardThreatensHeight(part, position)
 end
 
-function refreshNearbyActiveHazards()
+local function refreshNearbyActiveHazards()
 	DodgeController:refreshNearbyActiveHazards()
 end
 
-function pointIsSafeFromHazards(position: Vector3): boolean
+local function pointIsSafeFromHazards(position: Vector3): boolean
 	return DodgeController:pointIsSafeFromHazards(position)
 end
 
-function dodgeRouteClear(goal: Vector3): boolean
+local function dodgeRouteClear(goal: Vector3): boolean
 	return DodgeController:dodgeRouteClear(goal)
 end
 
@@ -3069,7 +3049,7 @@ RuntimeState.chooseExploreGoal = function(): (Vector3?, Vector3?, number)
 	return bestGoal, bestDirection, bestDownhill
 end
 
-function clearExploreObjective()
+local function clearExploreObjective()
 	ExploreGoal = nil
 	ExploreCommitUntil = 0
 	ExploreBestDistance = math.huge
@@ -3106,7 +3086,7 @@ RuntimeState.extendDescentGoal = function(now: number): boolean
 	return true
 end
 
-function updateExploreMovement()
+local function updateExploreMovement()
 	if State ~= NavigationState.EXPLORE or not Root or not Humanoid or not ExploreGoal or Target then
 		return
 	end
@@ -3127,11 +3107,11 @@ function updateExploreMovement()
 	commandMovement(direction.Unit, false)
 end
 
-function directRouteClear(goal: Vector3, target: Model?): boolean
+local function directRouteClear(goal: Vector3, target: Model?): boolean
 	return MovementController:directRouteClear(goal, target)
 end
 
-function navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vector3
+local function navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vector3
 	if not Root then
 		return enemyRoot.Position
 	end
@@ -3180,15 +3160,15 @@ function navigationGoalForTarget(enemyRoot: BasePart, target: Model): Vector3
 	return desired
 end
 
-function acquireBestTarget(): Model?
+local function acquireBestTarget(): Model?
 	return TargetingController:acquireBestTarget()
 end
 
-function targetMetrics(target: Model?): (number, number)
+local function targetMetrics(target: Model?): (number, number)
 	return TargetingController:targetMetrics(target)
 end
 
-function updateGlobalStuckJump()
+local function updateGlobalStuckJump()
 	if not Running or not alive() or not Root or not Humanoid then
 		RuntimeState.JumpStillSince = os.clock()
 		RuntimeState.JumpBestDistance = math.huge
@@ -3239,8 +3219,14 @@ function updateGlobalStuckJump()
 	end
 end
 
-function guiRoots(): { Instance }
+local function guiRoots(): { Instance }
 	local roots: { Instance } = { PlayerGui }
+	local okCoreGui, coreGui = pcall(function()
+		return game:GetService("CoreGui")
+	end)
+	if okCoreGui and coreGui then
+		table.insert(roots, coreGui)
+	end
 	if type(gethui) == "function" then
 		local ok, hiddenUi = pcall(gethui)
 		if ok and typeof(hiddenUi) == "Instance" then
@@ -3250,7 +3236,7 @@ function guiRoots(): { Instance }
 	return roots
 end
 
-function visibleGui(object: Instance): boolean
+local function visibleGui(object: Instance): boolean
 	local current: Instance? = object
 	while current do
 		if current:IsA("GuiObject") and not current.Visible then
@@ -3263,7 +3249,7 @@ function visibleGui(object: Instance): boolean
 	return true
 end
 
-function buttonHasText(button: GuiButton, expected: string): boolean
+local function buttonHasText(button: GuiButton, expected: string): boolean
 	local function matches(object: Instance): boolean
 		return (object:IsA("TextButton") or object:IsA("TextLabel"))
 			and visibleGui(object)
@@ -3292,31 +3278,31 @@ ReplayController = ReplayControllerModule.new({
 	telemetry = telemetry,
 })
 
-function findReplayButton(): GuiButton?
+local function findReplayButton(): GuiButton?
 	return ReplayController:findButton()
 end
 
-function clickReplayButton(button: GuiButton)
+local function clickReplayButton(button: GuiButton)
 	ReplayController:clickButton(button)
 end
 
-function setReplayPhase(phase: string)
+local function setReplayPhase(phase: string)
 	ReplayController:setPhase(phase)
 end
 
-function findReplayResult(): GuiObject?
+local function findReplayResult(): GuiObject?
 	return ReplayController:findResult()
 end
 
-function findReplayOpener(): GuiButton?
+local function findReplayOpener(): GuiButton?
 	return ReplayController:findOpener()
 end
 
-function tryReplayDungeon()
+local function tryReplayDungeon()
 	ReplayController:tryReplayDungeon()
 end
 
-function armReplayToken(reason: string)
+local function armReplayToken(reason: string)
 	ReplayController:arm(reason)
 end
 
@@ -3584,11 +3570,11 @@ RuntimeState.remainingDungeonTime = function(): number?
 	return nil
 end
 
-function normalizeStartText(value: string): string
+local function normalizeStartText(value: string): string
 	return value:lower():gsub("[%s%p_]", "")
 end
 
-function startMarkerText(object: GuiObject): string?
+local function startMarkerText(object: GuiObject): string?
 	if not (object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox")) then
 		return nil
 	end
@@ -3599,7 +3585,7 @@ function startMarkerText(object: GuiObject): string?
 	return content ~= "" and content or object.Text
 end
 
-function findStartMarker(): GuiObject?
+local function findStartMarker(): GuiObject?
 	local nameFallback: GuiObject? = nil
 	for _, uiRoot in ipairs(guiRoots()) do
 		for _, object in ipairs(uiRoot:GetDescendants()) do
@@ -3619,7 +3605,7 @@ end
 
 local resolveStartButton
 
-function cachedStartScreen(): (GuiObject?, GuiButton?)
+local function cachedStartScreen(): (GuiObject?, GuiButton?)
 	local marker = RuntimeState.StartMarker
 	if marker and marker:IsDescendantOf(game) and visibleGui(marker) then
 		local button = RuntimeState.StartButton
@@ -3640,6 +3626,14 @@ function cachedStartScreen(): (GuiObject?, GuiButton?)
 	marker = findStartMarker()
 	RuntimeState.StartMarker = marker
 	RuntimeState.StartButton = marker and resolveStartButton(marker) or nil
+	local markerName = marker and marker:GetFullName() or "nil"
+	local buttonName = RuntimeState.StartButton and RuntimeState.StartButton:GetFullName() or "nil"
+	local signature = markerName .. "|" .. buttonName
+	if RuntimeState.StartDebugSignature ~= signature then
+		RuntimeState.StartDebugSignature = signature
+		print("[START] marker=" .. markerName)
+		print("[START] button=" .. buttonName)
+	end
 	return RuntimeState.StartMarker, RuntimeState.StartButton
 end
 
@@ -3667,7 +3661,7 @@ resolveStartButton = function(marker: GuiObject): GuiButton?
 	return nil
 end
 
-function getVimClickPoint(guiObject: GuiObject, xRatio: number, yRatio: number): (number, number, Vector2)
+local function getVimClickPoint(guiObject: GuiObject, xRatio: number, yRatio: number): (number, number, Vector2)
 	local point = guiObject.AbsolutePosition
 		+ Vector2.new(guiObject.AbsoluteSize.X * xRatio, guiObject.AbsoluteSize.Y * yRatio)
 	local screenGui: ScreenGui? = nil
@@ -3686,14 +3680,14 @@ function getVimClickPoint(guiObject: GuiObject, xRatio: number, yRatio: number):
 	return point.X, point.Y, inset
 end
 
-function setRoundPhase(phase: string)
+local function setRoundPhase(phase: string)
 	if RuntimeState.RoundPhase ~= phase then
 		RuntimeState.RoundPhase = phase
 		print("[ROUND] phase=" .. phase)
 	end
 end
 
-function tryStartDungeon(): boolean
+local function tryStartDungeon(): boolean
 	local marker, cachedButton = cachedStartScreen()
 	if not marker then
 		return false
@@ -3702,6 +3696,11 @@ function tryStartDungeon(): boolean
 		setRoundPhase("PRE_START")
 	end
 	if not Running or not Config.AutoStart or os.clock() - RuntimeState.LastStartClickAt < 1 then
+		local blocked = if not Running then "not-running" elseif not Config.AutoStart then "auto-start-disabled" else "cooldown"
+		if RuntimeState.StartDebugBlockState ~= blocked then
+			RuntimeState.StartDebugBlockState = blocked
+			print("[START] blocked=" .. blocked)
+		end
 		return true
 	end
 	if not VirtualInputManager then
@@ -3721,11 +3720,20 @@ function tryStartDungeon(): boolean
 	end)
 	if issued then
 		setRoundPhase("COUNTDOWN")
+		if RuntimeState.StartDebugClickState ~= "PASS" then
+			RuntimeState.StartDebugClickState = "PASS"
+			print("[START] click=PASS")
+		end
 		telemetry("START", clickTarget:GetFullName())
+	else
+		if RuntimeState.StartDebugClickState ~= "FAIL" then
+			RuntimeState.StartDebugClickState = "FAIL"
+			print("[START] click=FAIL")
+		end
 	end
 	return true
 end
-function clearAimObjects()
+local function clearAimObjects()
 	if Combat.AimAlignment then
 		Combat.AimAlignment:Destroy()
 		Combat.AimAlignment = nil
@@ -3736,7 +3744,7 @@ function clearAimObjects()
 	end
 end
 
-function ensureAimObjects()
+local function ensureAimObjects()
 	if not Root or Combat.AimAlignment then
 		return
 	end
@@ -3763,7 +3771,7 @@ restoreRotation = function()
 	end
 end
 
-function faceTarget(enemyRoot: BasePart)
+local function faceTarget(enemyRoot: BasePart)
 	if not Root or not Humanoid then
 		return
 	end
@@ -3779,7 +3787,7 @@ function faceTarget(enemyRoot: BasePart)
 	end
 end
 
-function updateTargetFacing()
+local function updateTargetFacing()
 	if Target and validTarget(Target) then
 		local enemyRoot = getTargetRoot(Target)
 		if enemyRoot then
@@ -3790,7 +3798,7 @@ function updateTargetFacing()
 	CombatController:restoreRotation()
 end
 
-function sendKey(key: Enum.KeyCode)
+local function sendKey(key: Enum.KeyCode)
 	if not VirtualInputManager then
 		return
 	end
@@ -3800,7 +3808,7 @@ function sendKey(key: Enum.KeyCode)
 	end)
 end
 
-function activateSkill(toolName: string, key: Enum.KeyCode, context: string): boolean
+local function activateSkill(toolName: string, key: Enum.KeyCode, context: string): boolean
 	local function logBackend(backend: string)
 		local signature = toolName .. ":" .. backend .. ":" .. context
 		local stateKey = "LastSkillBackend_" .. toolName
@@ -3858,11 +3866,11 @@ function activateSkill(toolName: string, key: Enum.KeyCode, context: string): bo
 	return false
 end
 
-function findNearestEnemyInSkillRange(): (Model?, BasePart?, number)
+local function findNearestEnemyInSkillRange(): (Model?, BasePart?, number)
 	return TargetingController:findNearestEnemyInSkillRange()
 end
 
-function useCombatSkills(enemyRoot: BasePart, distance3D: number)
+local function useCombatSkills(enemyRoot: BasePart, distance3D: number)
 	local activeSkillRange = Target and skillRangeForTarget(Target) or Config.NormalSkillRange
 	if not Target or not validTarget(Target) or distance3D > activeSkillRange then
 		return
@@ -3884,7 +3892,7 @@ function useCombatSkills(enemyRoot: BasePart, distance3D: number)
 	end
 end
 
-function useNormalAttack(distance3D: number)
+local function useNormalAttack(distance3D: number)
 	if
 		State == NavigationState.DODGE
 		or not validTarget(Target)
@@ -3912,7 +3920,7 @@ function useNormalAttack(distance3D: number)
 	end
 end
 
-function resolvePlayerControls()
+local function resolvePlayerControls()
 	if Combat.PlayerControls then
 		return Combat.PlayerControls
 	end
@@ -3932,7 +3940,7 @@ function resolvePlayerControls()
 	return nil
 end
 
-function disablePlayerControls()
+local function disablePlayerControls()
 	if Combat.PlayerControlsDisabled then
 		return
 	end
@@ -3970,7 +3978,7 @@ function disablePlayerControls()
 	end
 end
 
-function enablePlayerControls()
+local function enablePlayerControls()
 	if not Combat.PlayerControlsDisabled then
 		return
 	end
@@ -3987,11 +3995,11 @@ function enablePlayerControls()
 	end
 end
 
-function applyMovementSpeed()
+local function applyMovementSpeed()
 	-- Speed is owned by commandMovement; never alter Humanoid.WalkSpeed.
 end
 
-function restoreMovementSpeed()
+local function restoreMovementSpeed()
 	-- No WalkSpeed snapshot is owned by AutoFarm.
 end
 
@@ -4006,7 +4014,7 @@ end
 stopTranslation = function()
 	MovementController:stopTranslation()
 end
-function disposePath()
+local function disposePath()
 	disconnect(RuntimeState.PathBlockedConnection)
 	RuntimeState.PathBlockedConnection = nil
 	if ActivePath then
@@ -4046,7 +4054,7 @@ setNavigationState = function(newState: string)
 	RuntimeState.ActivityDetail = activeHazard and activeHazard:GetFullName() or ""
 end
 
-function resetProgress(target: Model?, goal: Vector3?)
+local function resetProgress(target: Model?, goal: Vector3?)
 	ProgressTarget = target
 	ProgressGoalAnchor = goal
 	BestGoalMetric = math.huge
@@ -4073,12 +4081,12 @@ pathRemainingMetric = function(): number
 	return metric
 end
 
-function markMeaningfulProgress()
+local function markMeaningfulProgress()
 	LastMeaningfulProgressAt = os.clock()
 	BestGoalMetric = pathRemainingMetric()
 end
 
-function updateProgressTracking()
+local function updateProgressTracking()
 	if not Root or not Target or not NavigationGoal then
 		return
 	end
@@ -4109,7 +4117,7 @@ function updateProgressTracking()
 	end
 end
 
-function rayClearance(origin: Vector3, direction: Vector3, target: Model?): number
+local function rayClearance(origin: Vector3, direction: Vector3, target: Model?): number
 	local result = workspace:Raycast(
 		origin + Vector3.new(0, 2.5, 0),
 		direction.Unit * Config.DetourProbeDistance,
@@ -4118,7 +4126,7 @@ function rayClearance(origin: Vector3, direction: Vector3, target: Model?): numb
 	return result and result.Distance or Config.DetourProbeDistance
 end
 
-function chooseRecoveryDetour(goal: Vector3, retreat: boolean?): Vector3?
+local function chooseRecoveryDetour(goal: Vector3, retreat: boolean?): Vector3?
 	if not Root then
 		return nil
 	end
@@ -4156,13 +4164,13 @@ function chooseRecoveryDetour(goal: Vector3, retreat: boolean?): Vector3?
 	return bestGoal
 end
 
-function beginLocalRecovery(goal: Vector3)
+local function beginLocalRecovery(goal: Vector3)
 	RecoveryGoal = chooseRecoveryDetour(goal)
 	RecoveryUntil = os.clock() + Config.DetourDuration
 	setNavigationState(NavigationState.RECOVERY)
 end
 
-function issueCurrentWaypoint()
+local function issueCurrentWaypoint()
 	if State ~= NavigationState.PATH or not Humanoid or not Root or not PathWaypoints then
 		return
 	end
@@ -4186,7 +4194,7 @@ function issueCurrentWaypoint()
 	commandMovement(Vector3.new(waypoint.Position.X - Root.Position.X, 0, waypoint.Position.Z - Root.Position.Z), NavigationState.PATH)
 end
 
-function requestPath(goal: Vector3): boolean
+local function requestPath(goal: Vector3): boolean
 	if not alive() or not Target or PathComputing then
 		return false
 	end
@@ -4250,7 +4258,7 @@ function requestPath(goal: Vector3): boolean
 	return true
 end
 
-function updatePathNavigation()
+local function updatePathNavigation()
 	if State ~= NavigationState.PATH or not Root or not PathWaypoints then
 		return
 	end
@@ -4296,7 +4304,7 @@ function updatePathNavigation()
 	end
 end
 
-function updateDirectMovement()
+local function updateDirectMovement()
 	if State ~= NavigationState.DIRECT or not Humanoid or not Root or not NavigationGoal then
 		return
 	end
@@ -4308,7 +4316,7 @@ function updateDirectMovement()
 	end
 end
 
-function updateRecoveryMovement()
+local function updateRecoveryMovement()
 	if
 		(State ~= NavigationState.RECOVERY and State ~= NavigationState.STEER and State ~= NavigationState.RETREAT)
 		or not Humanoid
@@ -4320,17 +4328,23 @@ function updateRecoveryMovement()
 		local enemyRoot = getTargetRoot(Target)
 		if enemyRoot then
 			local away = Vector3.new(Root.Position.X - enemyRoot.Position.X, 0, Root.Position.Z - enemyRoot.Position.Z)
-			local direction = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
+			local backward = away.Magnitude > 0.1 and away.Unit or Vector3.xAxis
+			local side = Vector3.new(-backward.Z, 0, backward.X) * (RuntimeState.RetreatSide or 1)
+			local direction = (backward + side).Unit
 			local retreatPoint, foundGround = projectToWalkableGround(Root.Position + direction * 7, Target)
 			if
 				foundGround
 				and math.abs(retreatPoint.Y - Root.Position.Y) <= Config.DirectVerticalTolerance
 				and hasGroundSupport(retreatPoint, Target)
 				and directRouteClear(retreatPoint, Target)
+				and pointIsSafeFromHazards(retreatPoint)
 			then
 				commandMovement(direction, false)
 			else
-				commandMovement(Vector3.zero, false)
+				RuntimeState.RetreatSide = -(RuntimeState.RetreatSide or 1)
+				RuntimeState.RetreatSideUntil = os.clock() + 0.75
+				local alternate = (backward + side * -1).Unit
+				commandMovement(alternate, false)
 			end
 			return
 		end
@@ -4364,7 +4378,7 @@ function updateRecoveryMovement()
 	end
 end
 
-function decideNavigation()
+local function decideNavigation()
 	if not alive() or not Target or not NavigationGoal then
 		return
 	end
@@ -4412,7 +4426,7 @@ function decideNavigation()
 	end
 end
 
-function resetNavigationForTarget(newTarget: Model?)
+local function resetNavigationForTarget(newTarget: Model?)
 	RuntimeState.VerticalPathTarget = nil
 	RuntimeState.VerticalPathGoal = nil
 	if RuntimeState.BossDiedTarget ~= newTarget then
@@ -4453,19 +4467,19 @@ function resetNavigationForTarget(newTarget: Model?)
 	end
 end
 
-function clearDodgeObjective()
+local function clearDodgeObjective()
 	DodgeController:clearObjective()
 end
 
-function leaveDodge()
+local function leaveDodge()
 	DodgeController:leave()
 end
 
-function updateDodgeController(): boolean
+local function updateDodgeController(): boolean
 	return DodgeController:update()
 end
 
-function updateDungeonReplayState()
+local function updateDungeonReplayState()
 	local now = os.clock()
 	if now - RuntimeState.LastDungeonStateCheckAt < 0.25 then
 		return
@@ -4574,7 +4588,7 @@ function updateDungeonReplayState()
 	tryReplayDungeon()
 end
 
-function updateTargetAndObjective()
+local function updateTargetAndObjective()
 	if not Running or not alive() or RuntimeState.RoundPhase ~= "ACTIVE" then
 		return
 	end
@@ -4680,6 +4694,10 @@ function updateTargetAndObjective()
 	elseif distance3D < Config.RetreatEnterDistance then
 		cancelPathRequest()
 		NavigationGoal = nil
+		if RuntimeState.RetreatSide == nil or now >= (RuntimeState.RetreatSideUntil or 0) then
+			RuntimeState.RetreatSide = RuntimeState.RetreatSide or 1
+			RuntimeState.RetreatSideUntil = now + 0.75
+		end
 		setNavigationState(NavigationState.RETREAT)
 		return
 	end
@@ -4740,7 +4758,7 @@ function updateTargetAndObjective()
 	runRecoveryPolicy()
 end
 
-function bindCharacter(character: Model)
+local function bindCharacter(character: Model)
 	RuntimeState.CharacterBindSerial += 1
 	local serial = RuntimeState.CharacterBindSerial
 	local newHumanoid = character:WaitForChild("Humanoid", 8)
@@ -4819,7 +4837,7 @@ setRunning = function(value: boolean)
 	end
 end
 
-function createObsidianUI()
+local function createObsidianUI()
 	if type(loadstring) ~= "function" then
 		warn("[UI] FAIL COMPILE", "loadstring unavailable")
 		return
@@ -4873,11 +4891,9 @@ function createObsidianUI()
 	end
 	local setupOk, setupErr = xpcall(function()
 		local farmTab = window:AddTab("FARM", "bot")
-		local movementTab = window:AddTab("MOVEMENT", "move")
 		local statusTab = window:AddTab("STATUS", "activity")
 		local settingsTab = window:AddTab("SETTINGS", "settings")
 		local farmGroup = farmTab:AddGroupbox({ Side = "Left", Name = "Automation" })
-		local movementGroup = movementTab:AddGroupbox({ Side = "Left", Name = "Movement" })
 		local statusGroup = statusTab:AddGroupbox({ Side = "Left", Name = "Status" })
 		local settingsDodge = settingsTab:AddGroupbox({ Side = "Left", Name = "Dodge" })
 		local settingsCombat = settingsTab:AddGroupbox({ Side = "Right", Name = "Combat" })
@@ -4890,6 +4906,14 @@ function createObsidianUI()
 			Config.AutoReplay = value
 			saveConfig()
 		end)
+		farmGroup:AddToggle("SpeedBoostEnabled", { Text = "Speed Boost", Default = Config.SpeedBoostEnabled }):OnChanged(function(value)
+			Config.SpeedBoostEnabled = value
+			saveConfig()
+		end)
+		farmGroup:AddSlider("SpeedValue", { Text = "Speed", Default = Config.SpeedValue, Min = 20, Max = 100, Rounding = 0 }):OnChanged(function(value)
+			Config.SpeedValue = value
+			saveConfig()
+		end)
 		farmGroup:AddToggle("AutoStart", { Text = "Auto Start", Default = Config.AutoStart }):OnChanged(function(value)
 			Config.AutoStart = value
 			saveConfig()
@@ -4898,19 +4922,30 @@ function createObsidianUI()
 			Config.FarmRange = value
 			saveConfig()
 		end)
-		movementGroup:AddLabel("Walk Speed: 23 studs/s")
+		local webhookGroup = farmTab:AddGroupbox({ Side = "Right", Name = "Webhook" })
+		webhookGroup:AddToggle("WebhookEnabled", { Text = "Enable", Default = Config.WebhookEnabled }):OnChanged(function(value)
+			Config.WebhookEnabled = value
+			saveConfig()
+		end)
+		webhookGroup:AddInput("WebhookURL", { Text = "URL", Default = Config.WebhookURL, Numeric = false, Finished = true }):OnChanged(function(value)
+			Config.WebhookURL = value
+			saveConfig()
+		end)
+		for _, item in ipairs({
+			{ "WebhookPingEveryone", "Ping Everyone" },
+			{ "WebhookPingLegend", "Ping on Legend" },
+			{ "WebhookPingUltimate", "Ping on Ultimate" },
+		}) do
+			webhookGroup:AddToggle(item[1], { Text = item[2], Default = Config[item[1]] }):OnChanged(function(value)
+				Config[item[1]] = value
+				saveConfig()
+			end)
+		end
 		settingsDodge:AddToggle("DodgeEnabled", { Text = "Dodge Enabled", Default = Config.DodgeEnabled }):OnChanged(function(value)
 			Config.DodgeEnabled = value
 			saveConfig()
 		end)
-		local dodgeSettings = {
-			{ "DodgeDetectionRadius", "Detection Radius", 20, 200, 1 },
-			{ "DodgeSafePadding", "Safe Padding", 0, 20, 0.5 },
-			{ "DodgeTriggerPadding", "Trigger Padding", 0, 20, 0.5 },
-			{ "DodgePreTriggerPadding", "Pre-Trigger Padding", 0, 30, 0.5 },
-			{ "DodgeLookaheadSeconds", "Lookahead Seconds", 0.1, 3, 0.1 },
-			{ "DodgeExitHysteresis", "Exit Hysteresis", 0, 2, 0.05 },
-		}
+		local dodgeSettings = {}
 		for _, spec in ipairs(dodgeSettings) do
 			local key, text, minimum, maximum, rounding = spec[1], spec[2], spec[3], spec[4], spec[5]
 			settingsDodge:AddSlider(key, { Text = text, Default = Config[key], Min = minimum, Max = maximum, Rounding = rounding }):OnChanged(function(value)
@@ -4919,9 +4954,6 @@ function createObsidianUI()
 			end)
 		end
 		local combatSettings = {
-			{ "PreferredCombatDistance", "Preferred Combat", 10, 150 },
-			{ "RetreatEnterDistance", "Retreat Enter", 10, 150 },
-			{ "RetreatExitDistance", "Retreat Exit", 10, 180 },
 			{ "NormalSkillRange", "Normal Skill Range", 10, 150 },
 			{ "BossSkillRange", "Boss Skill Range", 10, 200 },
 			{ "AttackRange", "Attack Range", 5, 50 },
@@ -4933,11 +4965,7 @@ function createObsidianUI()
 				saveConfig()
 			end)
 		end
-		local navigationSettings = {
-			{ "FarmRange", "Farm Range", 100, 1500 },
-			{ "ExploreStartDelay", "Explore Start Delay", 0, 10 },
-			{ "PathRebuildCooldown", "Path Rebuild Cooldown", 0.2, 5 },
-		}
+		local navigationSettings = {}
 		for _, spec in ipairs(navigationSettings) do
 			local key, text, minimum, maximum = spec[1], spec[2], spec[3], spec[4]
 			settingsNavigation:AddSlider(key, { Text = text, Default = Config[key], Min = minimum, Max = maximum, Rounding = 1 }):OnChanged(function(value)
@@ -5008,7 +5036,7 @@ updateObsidianStatus = function()
 		end
 	end
 end
-function shutdown()
+local function shutdown()
 	Config.FarmEnabled = Running
 	saveConfig()
 	Enabled, Running = false, false
@@ -5252,7 +5280,7 @@ print("[BOOT_END] SOURCE COMPLETE")
 -- final source marker present
 -- AUTOFARM_PHYSICAL_EOF
 ]=],
-	["Runtime.lua"] = [=[
+    ["Runtime.lua"] = [=[
 -- Shared in-memory runtime state. Persistence belongs exclusively to Systems.ConfigStore.
 
 local Runtime = {}
@@ -5351,9 +5379,8 @@ local state = {
 end
 
 return Runtime
-
 ]=],
-	["Systems/ConfigStore.lua"] = [=[
+    ["Systems/ConfigStore.lua"] = [=[
 local Defaults = require(script.Parent.Parent.Config)
 
 local Store = {}
@@ -5375,6 +5402,12 @@ local NUMERIC_OR_BOOLEAN_KEYS = {
     "AttackRange",
     "ExploreStartDelay",
     "PathRebuildCooldown",
+    "SpeedBoostEnabled",
+    "SpeedValue",
+    "WebhookEnabled",
+    "WebhookPingEveryone",
+    "WebhookPingLegend",
+    "WebhookPingUltimate",
 }
 
 local function clone(value)
@@ -5481,8 +5514,13 @@ function Store.save(httpService, config)
                 BossSkillRange = config.BossSkillRange,
                 ExploreStartDelay = config.ExploreStartDelay,
                 PathRebuildCooldown = config.PathRebuildCooldown,
-                SpeedEnabled = config.SpeedEnabled == true,
-                MoveSpeed = config.MoveSpeed,
+                SpeedBoostEnabled = config.SpeedBoostEnabled == true,
+                SpeedValue = config.SpeedValue,
+                WebhookEnabled = config.WebhookEnabled == true,
+                WebhookURL = config.WebhookURL,
+                WebhookPingEveryone = config.WebhookPingEveryone == true,
+                WebhookPingLegend = config.WebhookPingLegend == true,
+                WebhookPingUltimate = config.WebhookPingUltimate == true,
             })
         )
     end)
@@ -5490,9 +5528,8 @@ function Store.save(httpService, config)
 end
 
 return Store
-
 ]=],
-	["Systems/DungeonResolver.lua"] = [=[
+    ["Systems/DungeonResolver.lua"] = [=[
 local DungeonResolver = {}
 DungeonResolver.__index = DungeonResolver
 
@@ -5594,6 +5631,16 @@ function DungeonResolver:bootstrap(root: Instance)
 	end))
 
 	runtime.DungeonBootstrapped = true
+	local rootPath = root:GetFullName()
+	local folderPath = runtime.EnemyFolderInstance and runtime.EnemyFolderInstance:GetFullName() or "nil"
+	if runtime.DebugDungeonRoot ~= rootPath then
+		runtime.DebugDungeonRoot = rootPath
+		print("[DUNGEON] root=" .. rootPath)
+	end
+	if runtime.DebugEnemyFolder ~= folderPath then
+		runtime.DebugEnemyFolder = folderPath
+		print("[DUNGEON] enemyFolder=" .. folderPath)
+	end
 end
 
 function DungeonResolver:refresh()
@@ -5651,13 +5698,21 @@ function DungeonResolver:refresh()
 
 	if candidate then
 		self:bootstrap(candidate)
+	else
+		if runtime.DebugDungeonRoot ~= "nil" then
+			runtime.DebugDungeonRoot = "nil"
+			print("[DUNGEON] root=nil")
+		end
+		if runtime.DebugEnemyFolder ~= "nil" then
+			runtime.DebugEnemyFolder = "nil"
+			print("[DUNGEON] enemyFolder=nil")
+		end
 	end
 end
 
 return DungeonResolver
-
 ]=],
-	["Systems/SkillFX.lua"] = [=[
+    ["Systems/SkillFX.lua"] = [=[
 local SkillFX = {}
 SkillFX.__index = SkillFX
 
@@ -5776,9 +5831,8 @@ function SkillFX:unregisterModel(model: Model)
 end
 
 return SkillFX
-
 ]=],
-	["Systems/TimerResolver.lua"] = [=[
+    ["Systems/TimerResolver.lua"] = [=[
 local TimerResolver = {}
 TimerResolver.__index = TimerResolver
 
@@ -5871,9 +5925,8 @@ function TimerResolver:getRemainingTime(): number?
 end
 
 return TimerResolver
-
 ]=],
-	["UI/ObsidianUI.lua"] = [=[
+    ["UI/ObsidianUI.lua"] = [=[
 local ObsidianUI = {}
 ObsidianUI.__index = ObsidianUI
 
@@ -6029,19 +6082,8 @@ function ObsidianUI:update()
 end
 
 return ObsidianUI
-
 ]=],
 }
-
-assert(type(loadstring) == "function", "loadstring unavailable")
-assert(type(setfenv) == "function", "setfenv unavailable")
-assert(type(getfenv) == "function", "getfenv unavailable")
-
-local Node = {}
-Node.__index = function(self, key)
-	return rawget(self, "_children")[key]
-end
-
 local function newNode(name, path, parent)
 	return setmetatable({
 		Name = name,
