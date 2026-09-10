@@ -144,10 +144,35 @@ function Replay:findOpener(): GuiButton?
 	return nil
 end
 
+function Replay:requestManualReplay(): boolean
+	local runtime = self.RuntimeState
+	if runtime.ManualReplayRequested or runtime.ReplayPhase ~= "IDLE" then
+		print("[REPLAY] manual=ignored")
+		return false
+	end
+	local result = self:findResult()
+	if not result then
+		print("[REPLAY] manual=blocked-no-result")
+		return false
+	end
+	runtime.ManualReplayRequested = true
+	runtime.ReplayRetries = 0
+	runtime.ReplayCompletionRoot = result
+	runtime.ReplayCompletionDetected = true
+	runtime.ReplayOpener = nil
+	runtime.ReplayYesButton = nil
+	runtime.ReplayConfirmRoot = nil
+	runtime.ReplayResultScanDirty = false
+	self:setPhase("RESULT_DETECTED")
+	print("[REPLAY] manual=requested")
+	return true
+end
+
 function Replay:tryReplayDungeon()
 	local runtime = self.RuntimeState
 	local now = os.clock()
-	if not self.isRunning() or not self.Config.AutoReplay then return end
+	local automatic = self.isRunning() and self.Config.AutoReplay
+	if not automatic and not runtime.ManualReplayRequested then return end
 	local phase = runtime.ReplayPhase
 	local phaseAge = now - runtime.ReplayPhaseEnteredAt
 	if runtime.ReplayResultScanDirty or (phase ~= "IDLE" and now - runtime.ReplayLastGuiScanAt >= 0.5) then
@@ -171,7 +196,9 @@ function Replay:tryReplayDungeon()
 		runtime.ReplayYesButton = nil
 		runtime.ReplayConfirmRoot = nil
 		runtime.ReplayResultScanDirty = true
-		self:setPhase("RESULT_DETECTED")
+		local wasManual = runtime.ManualReplayRequested
+		runtime.ManualReplayRequested = false
+		self:setPhase(wasManual and "IDLE" or "RESULT_DETECTED")
 		return
 	end
 	if phase == "IDLE" then
@@ -191,7 +218,10 @@ function Replay:tryReplayDungeon()
 			self:setPhase("OPENING")
 			return
 		end
-		if phaseAge > 8 then self:setPhase("IDLE") end
+		if phaseAge > 8 then
+			runtime.ManualReplayRequested = false
+			self:setPhase("IDLE")
+		end
 		return
 	end
 	if phase == "CONFIRMING" then
@@ -199,6 +229,7 @@ function Replay:tryReplayDungeon()
 		if awaiting and (not awaiting:IsDescendantOf(game) or not self.visibleGui(awaiting)) then
 			runtime.ReplayAwaitingClose = nil
 			runtime.ReplayDungeonIdentity = runtime.DungeonIdentity
+			runtime.ManualReplayRequested = false
 			print("[REPLAY] confirmation closed; waiting new round")
 			self:setPhase("WAIT_NEW_ROUND")
 			return
@@ -206,7 +237,9 @@ function Replay:tryReplayDungeon()
 		if phaseAge > 8 then
 			runtime.ReplayYesButton = nil
 			runtime.ReplayConfirmRoot = nil
-			self:setPhase("RESULT_DETECTED")
+			local wasManual = runtime.ManualReplayRequested
+			runtime.ManualReplayRequested = false
+			self:setPhase(wasManual and "IDLE" or "RESULT_DETECTED")
 		end
 		return
 	end
@@ -223,7 +256,9 @@ function Replay:tryReplayDungeon()
 		return
 	end
 	if phase == "OPENING" and phaseAge > 8 then
-		self:setPhase("RESULT_DETECTED")
+		local wasManual = runtime.ManualReplayRequested
+		runtime.ManualReplayRequested = false
+		self:setPhase(wasManual and "IDLE" or "RESULT_DETECTED")
 	end
 end
 

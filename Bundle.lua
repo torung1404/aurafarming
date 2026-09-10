@@ -936,7 +936,18 @@ function Lifecycle:update()
 	end
 
 	local finished = runtime.DungeonFinishedInstance
-	local resultObject = runtime.ReplayResultScanDirty and ctx.FindReplayResult() or nil
+	-- Result UI discovery walks GUI descendants. Keep the first scan immediate
+	-- after a dirty event, then throttle subsequent checks while the round runs.
+	local replayActive = runtime.ReplayPhase ~= "IDLE" or runtime.RoundPhase == "RESULT"
+	local shouldScanResult = runtime.ReplayResultScanDirty
+		or (replayActive and now - runtime.ReplayLastGuiScanAt >= 0.5)
+		or (runtime.RoundPhase == "ACTIVE" and now - runtime.ReplayLastGuiScanAt >= 1)
+	local resultObject = nil
+	if shouldScanResult then
+		runtime.ReplayResultScanDirty = false
+		runtime.ReplayLastGuiScanAt = now
+		resultObject = ctx.FindReplayResult()
+	end
 	local resultVisible = resultObject ~= nil
 	if resultObject then
 		runtime.ReplayCompletionRoot = resultObject
@@ -2109,10 +2120,35 @@ function Replay:findOpener(): GuiButton?
 	return nil
 end
 
+function Replay:requestManualReplay(): boolean
+	local runtime = self.RuntimeState
+	if runtime.ManualReplayRequested or runtime.ReplayPhase ~= "IDLE" then
+		print("[REPLAY] manual=ignored")
+		return false
+	end
+	local result = self:findResult()
+	if not result then
+		print("[REPLAY] manual=blocked-no-result")
+		return false
+	end
+	runtime.ManualReplayRequested = true
+	runtime.ReplayRetries = 0
+	runtime.ReplayCompletionRoot = result
+	runtime.ReplayCompletionDetected = true
+	runtime.ReplayOpener = nil
+	runtime.ReplayYesButton = nil
+	runtime.ReplayConfirmRoot = nil
+	runtime.ReplayResultScanDirty = false
+	self:setPhase("RESULT_DETECTED")
+	print("[REPLAY] manual=requested")
+	return true
+end
+
 function Replay:tryReplayDungeon()
 	local runtime = self.RuntimeState
 	local now = os.clock()
-	if not self.isRunning() or not self.Config.AutoReplay then return end
+	local automatic = self.isRunning() and self.Config.AutoReplay
+	if not automatic and not runtime.ManualReplayRequested then return end
 	local phase = runtime.ReplayPhase
 	local phaseAge = now - runtime.ReplayPhaseEnteredAt
 	if runtime.ReplayResultScanDirty or (phase ~= "IDLE" and now - runtime.ReplayLastGuiScanAt >= 0.5) then
@@ -2136,7 +2172,9 @@ function Replay:tryReplayDungeon()
 		runtime.ReplayYesButton = nil
 		runtime.ReplayConfirmRoot = nil
 		runtime.ReplayResultScanDirty = true
-		self:setPhase("RESULT_DETECTED")
+		local wasManual = runtime.ManualReplayRequested
+		runtime.ManualReplayRequested = false
+		self:setPhase(wasManual and "IDLE" or "RESULT_DETECTED")
 		return
 	end
 	if phase == "IDLE" then
@@ -2156,7 +2194,10 @@ function Replay:tryReplayDungeon()
 			self:setPhase("OPENING")
 			return
 		end
-		if phaseAge > 8 then self:setPhase("IDLE") end
+		if phaseAge > 8 then
+			runtime.ManualReplayRequested = false
+			self:setPhase("IDLE")
+		end
 		return
 	end
 	if phase == "CONFIRMING" then
@@ -2164,6 +2205,7 @@ function Replay:tryReplayDungeon()
 		if awaiting and (not awaiting:IsDescendantOf(game) or not self.visibleGui(awaiting)) then
 			runtime.ReplayAwaitingClose = nil
 			runtime.ReplayDungeonIdentity = runtime.DungeonIdentity
+			runtime.ManualReplayRequested = false
 			print("[REPLAY] confirmation closed; waiting new round")
 			self:setPhase("WAIT_NEW_ROUND")
 			return
@@ -2171,7 +2213,9 @@ function Replay:tryReplayDungeon()
 		if phaseAge > 8 then
 			runtime.ReplayYesButton = nil
 			runtime.ReplayConfirmRoot = nil
-			self:setPhase("RESULT_DETECTED")
+			local wasManual = runtime.ManualReplayRequested
+			runtime.ManualReplayRequested = false
+			self:setPhase(wasManual and "IDLE" or "RESULT_DETECTED")
 		end
 		return
 	end
@@ -2188,7 +2232,9 @@ function Replay:tryReplayDungeon()
 		return
 	end
 	if phase == "OPENING" and phaseAge > 8 then
-		self:setPhase("RESULT_DETECTED")
+		local wasManual = runtime.ManualReplayRequested
+		runtime.ManualReplayRequested = false
+		self:setPhase(wasManual and "IDLE" or "RESULT_DETECTED")
 	end
 end
 
@@ -2847,7 +2893,32 @@ MovementController = MovementControllerModule.new({
 	getHumanoid = function() return Humanoid end,
 	getRoot = function() return Root end,
 	getTarget = function() return Target end,
-	pointIsSafeFromHazards = function(position) return pointIsSafeFromHazards(position) end,
+	getEnabled = function() return Enabled end,
+	getRunning = function() return Running end,
+	alive = alive,
+	getTargetRoot = getTargetRoot,
+	getActiveHazard = function()
+		return DodgeController and DodgeController:getActiveHazard() or nil
+	end,
+	validTarget = validTarget,
+	recoverByRespawn = function(...)
+		return recoverByRespawn(...)
+	end,
+	isRespawnInProgress = function()
+		return RecoveryState.RespawnInProgress
+	end,
+	refreshNearbyActiveHazards = function()
+		return DodgeController:refreshNearbyActiveHazards()
+	end,
+	dodgeRouteClear = function(goal)
+		return DodgeController:dodgeRouteClear(goal)
+	end,
+	telemetry = telemetry,
+	-- DodgeController is created after MovementController. Keep this as a late
+	-- binding so normal route checks use the real hazard helper once gameplay starts.
+	pointIsSafeFromHazards = function(position)
+		return DodgeController:pointIsSafeFromHazards(position)
+	end,
 })
 local function makeRaycastParams(target: Model?): RaycastParams
 	return MovementController:makeRaycastParams(target)
@@ -3001,7 +3072,7 @@ local function refreshNearbyActiveHazards()
 	DodgeController:refreshNearbyActiveHazards()
 end
 
-local function pointIsSafeFromHazards(position: Vector3): boolean
+pointIsSafeFromHazards = function(position: Vector3): boolean
 	return DodgeController:pointIsSafeFromHazards(position)
 end
 
@@ -3459,6 +3530,9 @@ ObsidianUI = ObsidianUIModule.new({
 	GetRunning = function() return Running end,
 	SetRunning = function(value) return setRunning(value) end,
 	SaveConfig = saveConfig,
+	RequestManualReplay = function()
+		return ReplayController:requestManualReplay()
+	end,
 	GetTarget = function() return Target end,
 	GetRoot = function() return Root end,
 	GetTargetRoot = getTargetRoot,
@@ -4569,6 +4643,62 @@ local function resetNavigationForTarget(newTarget: Model?)
 	end
 end
 
+recoverByRespawn = function(
+	expectedTarget: Model?,
+	expectedProgressAt: number?,
+	exploreRecovery: boolean?,
+	globalStuckAt: number?
+)
+	if RecoveryState.RespawnInProgress then
+		return
+	end
+	RecoveryState.RespawnInProgress = true
+	task.spawn(function()
+		task.wait(0.4)
+		if not Enabled or not Running then
+			RecoveryState.RespawnInProgress = false
+			return
+		end
+		if expectedTarget then
+			if
+				State == NavigationState.DODGE
+				or Target ~= expectedTarget
+				or LastMeaningfulProgressAt ~= expectedProgressAt
+				or os.clock() - LastMeaningfulProgressAt < Config.RespawnStuckTime
+			then
+				RecoveryState.RespawnInProgress = false
+				return
+			end
+		elseif exploreRecovery then
+			if State == NavigationState.DODGE or Target or LastExploreMeaningfulProgressAt ~= expectedProgressAt then
+				RecoveryState.RespawnInProgress = false
+				return
+			end
+		elseif globalStuckAt then
+			if RuntimeState.JumpStillSince ~= globalStuckAt then
+				RecoveryState.RespawnInProgress = false
+				return
+			end
+		elseif alive() then
+			RecoveryState.RespawnInProgress = false
+			return
+		end
+		RecoveryState.ResetExecuting = true
+		resetNavigationForTarget(nil)
+		local resetCharacter = Character
+		for _, key in ipairs({ Enum.KeyCode.Escape, Enum.KeyCode.R, Enum.KeyCode.Return, Enum.KeyCode.Return }) do
+			if not Enabled or not Running or Character ~= resetCharacter or State == NavigationState.DODGE then
+				break
+			end
+			sendKey(key)
+			task.wait(0.5)
+		end
+		task.wait(3)
+		RecoveryState.ResetExecuting = false
+		RecoveryState.RespawnInProgress = false
+	end)
+end
+
 resetRuntimeForNewDungeon = function()
 	if RecoveryState.ResetExecuting then
 		return
@@ -5246,6 +5376,7 @@ local state = {
 	ReplayPhase = "IDLE",
 	ReplayPhaseEnteredAt = 0,
 	ReplayRetries = 0,
+	ManualReplayRequested = false,
 	ReplayResultScanDirty = true,
 	ReplayArmedAt = 0,
 	ReplayLastActionAt = -math.huge,
@@ -5973,6 +6104,13 @@ function ObsidianUI:create()
 		ctx.Config.AutoReplay = value
 		ctx.SaveConfig()
 	end)
+
+	farmGroup:AddButton({
+		Text = "Replay Now",
+		Func = function()
+			ctx.RequestManualReplay()
+		end,
+	})
 
 	farmGroup:AddToggle("AutoStart", {
 		Text = "Auto Start",

@@ -79,7 +79,18 @@ function Lifecycle:update()
 	end
 
 	local finished = runtime.DungeonFinishedInstance
-	local resultObject = runtime.ReplayResultScanDirty and ctx.FindReplayResult() or nil
+	-- Result UI discovery walks GUI descendants. Keep the first scan immediate
+	-- after a dirty event, then throttle subsequent checks while the round runs.
+	local replayActive = runtime.ReplayPhase ~= "IDLE" or runtime.RoundPhase == "RESULT"
+	local shouldScanResult = runtime.ReplayResultScanDirty
+		or (replayActive and now - runtime.ReplayLastGuiScanAt >= 0.5)
+		or (runtime.RoundPhase == "ACTIVE" and now - runtime.ReplayLastGuiScanAt >= 1)
+	local resultObject = nil
+	if shouldScanResult then
+		runtime.ReplayResultScanDirty = false
+		runtime.ReplayLastGuiScanAt = now
+		resultObject = ctx.FindReplayResult()
+	end
 	local resultVisible = resultObject ~= nil
 	if resultObject then
 		runtime.ReplayCompletionRoot = resultObject

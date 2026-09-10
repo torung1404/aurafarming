@@ -424,7 +424,32 @@ MovementController = MovementControllerModule.new({
 	getHumanoid = function() return Humanoid end,
 	getRoot = function() return Root end,
 	getTarget = function() return Target end,
-	pointIsSafeFromHazards = function(position) return pointIsSafeFromHazards(position) end,
+	getEnabled = function() return Enabled end,
+	getRunning = function() return Running end,
+	alive = alive,
+	getTargetRoot = getTargetRoot,
+	getActiveHazard = function()
+		return DodgeController and DodgeController:getActiveHazard() or nil
+	end,
+	validTarget = validTarget,
+	recoverByRespawn = function(...)
+		return recoverByRespawn(...)
+	end,
+	isRespawnInProgress = function()
+		return RecoveryState.RespawnInProgress
+	end,
+	refreshNearbyActiveHazards = function()
+		return DodgeController:refreshNearbyActiveHazards()
+	end,
+	dodgeRouteClear = function(goal)
+		return DodgeController:dodgeRouteClear(goal)
+	end,
+	telemetry = telemetry,
+	-- DodgeController is created after MovementController. Keep this as a late
+	-- binding so normal route checks use the real hazard helper once gameplay starts.
+	pointIsSafeFromHazards = function(position)
+		return DodgeController:pointIsSafeFromHazards(position)
+	end,
 })
 local function makeRaycastParams(target: Model?): RaycastParams
 	return MovementController:makeRaycastParams(target)
@@ -578,7 +603,7 @@ local function refreshNearbyActiveHazards()
 	DodgeController:refreshNearbyActiveHazards()
 end
 
-local function pointIsSafeFromHazards(position: Vector3): boolean
+pointIsSafeFromHazards = function(position: Vector3): boolean
 	return DodgeController:pointIsSafeFromHazards(position)
 end
 
@@ -1036,6 +1061,9 @@ ObsidianUI = ObsidianUIModule.new({
 	GetRunning = function() return Running end,
 	SetRunning = function(value) return setRunning(value) end,
 	SaveConfig = saveConfig,
+	RequestManualReplay = function()
+		return ReplayController:requestManualReplay()
+	end,
 	GetTarget = function() return Target end,
 	GetRoot = function() return Root end,
 	GetTargetRoot = getTargetRoot,
@@ -2144,6 +2172,62 @@ local function resetNavigationForTarget(newTarget: Model?)
 	if not newTarget then
 		CombatController:restoreRotation()
 	end
+end
+
+recoverByRespawn = function(
+	expectedTarget: Model?,
+	expectedProgressAt: number?,
+	exploreRecovery: boolean?,
+	globalStuckAt: number?
+)
+	if RecoveryState.RespawnInProgress then
+		return
+	end
+	RecoveryState.RespawnInProgress = true
+	task.spawn(function()
+		task.wait(0.4)
+		if not Enabled or not Running then
+			RecoveryState.RespawnInProgress = false
+			return
+		end
+		if expectedTarget then
+			if
+				State == NavigationState.DODGE
+				or Target ~= expectedTarget
+				or LastMeaningfulProgressAt ~= expectedProgressAt
+				or os.clock() - LastMeaningfulProgressAt < Config.RespawnStuckTime
+			then
+				RecoveryState.RespawnInProgress = false
+				return
+			end
+		elseif exploreRecovery then
+			if State == NavigationState.DODGE or Target or LastExploreMeaningfulProgressAt ~= expectedProgressAt then
+				RecoveryState.RespawnInProgress = false
+				return
+			end
+		elseif globalStuckAt then
+			if RuntimeState.JumpStillSince ~= globalStuckAt then
+				RecoveryState.RespawnInProgress = false
+				return
+			end
+		elseif alive() then
+			RecoveryState.RespawnInProgress = false
+			return
+		end
+		RecoveryState.ResetExecuting = true
+		resetNavigationForTarget(nil)
+		local resetCharacter = Character
+		for _, key in ipairs({ Enum.KeyCode.Escape, Enum.KeyCode.R, Enum.KeyCode.Return, Enum.KeyCode.Return }) do
+			if not Enabled or not Running or Character ~= resetCharacter or State == NavigationState.DODGE then
+				break
+			end
+			sendKey(key)
+			task.wait(0.5)
+		end
+		task.wait(3)
+		RecoveryState.ResetExecuting = false
+		RecoveryState.RespawnInProgress = false
+	end)
 end
 
 resetRuntimeForNewDungeon = function()

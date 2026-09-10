@@ -80,6 +80,13 @@ function ObsidianUI:create()
 		ctx.SaveConfig()
 	end)
 
+	farmGroup:AddButton({
+		Text = "Replay Now",
+		Func = function()
+			ctx.RequestManualReplay()
+		end,
+	})
+
 	farmGroup:AddToggle("AutoStart", {
 		Text = "Auto Start",
 		Default = ctx.Config.AutoStart,

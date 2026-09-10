@@ -14,6 +14,7 @@ local state = {
 	ReplayPhase = "IDLE",
 	ReplayPhaseEnteredAt = 0,
 	ReplayRetries = 0,
+	ManualReplayRequested = false,
 	ReplayResultScanDirty = true,
 	ReplayArmedAt = 0,
 	ReplayLastActionAt = -math.huge,
