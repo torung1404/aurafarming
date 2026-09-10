@@ -2617,6 +2617,8 @@ local getTargetRoot
 local cancelPathRequest
 local pathRemainingMetric
 local restoreRotation
+local cachedStartScreen
+local tryStartDungeon
 
 local function logPerf(name: string, startedAt: number)
 	local elapsed = (os.clock() - startedAt) * 1000
@@ -3426,8 +3428,12 @@ LifecycleController = LifecycleControllerModule.new({
 			return RuntimeState.refreshDungeonReferences()
 		end
 	end,
-	CachedStartScreen = cachedStartScreen,
-	TryStartDungeon = tryStartDungeon,
+	CachedStartScreen = function()
+		return cachedStartScreen()
+	end,
+	TryStartDungeon = function()
+		return tryStartDungeon()
+	end,
 	TryReplayDungeon = tryReplayDungeon,
 	ArmReplayToken = armReplayToken,
 	FindReplayResult = findReplayResult,
@@ -3679,7 +3685,7 @@ end
 
 local resolveStartButton
 
-local function cachedStartScreen(): (GuiObject?, GuiButton?)
+cachedStartScreen = function(): (GuiObject?, GuiButton?)
 	local marker = RuntimeState.StartMarker
 	if marker and marker:IsDescendantOf(game) and visibleGui(marker) then
 		local button = RuntimeState.StartButton
@@ -3770,7 +3776,7 @@ local function setRoundPhase(phase: string)
 	end
 end
 
-local function tryStartDungeon(): boolean
+tryStartDungeon = function(): boolean
 	local marker, cachedButton = cachedStartScreen()
 	if not marker then
 		return false
