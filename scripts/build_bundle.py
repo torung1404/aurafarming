@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "Bundle.lua"
 EXCLUDED = {"Bundle.lua", "LOADSTRING.lua"}
+MAX_MAIN_TOP_LEVEL_LOCAL_BINDINGS = 160
 
 
 def quote_luau(source: str) -> str:
@@ -18,11 +19,34 @@ def quote_luau(source: str) -> str:
         level += 1
 
 
+def top_level_local_bindings(source: str) -> int:
+    """Conservatively count Main.lua bindings that share the chunk register pool."""
+    bindings = 0
+    for line in source.splitlines():
+        if line.startswith("local function "):
+            bindings += 1
+            continue
+        if not line.startswith("local ") or "=" not in line:
+            continue
+        left = line[6 : line.index("=")].strip()
+        if left and not left.startswith("function "):
+            bindings += len(left.split(","))
+    return bindings
+
+
 def main() -> None:
     paths = sorted(
         path for path in ROOT.rglob("*.lua")
         if path.name not in EXCLUDED and ".git" not in path.parts
     )
+    main_source = (ROOT / "Main.lua").read_text(encoding="utf-8")
+    main_bindings = top_level_local_bindings(main_source)
+    if main_bindings > MAX_MAIN_TOP_LEVEL_LOCAL_BINDINGS:
+        raise SystemExit(
+            "Main.lua has "
+            f"{main_bindings} top-level local bindings; limit is "
+            f"{MAX_MAIN_TOP_LEVEL_LOCAL_BINDINGS}. Group state or move logic into its controller before bundling."
+        )
     chunks = [
         "-- AUTO-GENERATED FILE.\n",
         "-- DO NOT EDIT DIRECTLY. Edit source modules/Main.lua and run scripts/build_bundle.py.\n",
